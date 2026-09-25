@@ -60,7 +60,7 @@ const EDIT_SCHEMA = {
     description: {
       type: "string",
       maxLength: 2000,
-      description: "Objective IPTC Description based on the image and GPS-derived location. Never identify or name individual people. Omit when the image has no GPS coordinates.",
+      description: "Objective IPTC Description based on the finished JPEG and a verified location. Never include coordinates or identify individual people. Omit when exact location is unverified.",
     },
     keywords: {
       type: "array",
@@ -68,7 +68,7 @@ const EDIT_SCHEMA = {
       maxItems: 30,
       uniqueItems: true,
       items: { type: "string", minLength: 1, maxLength: 64 },
-      description: "Concise IPTC keywords describing visible subjects. Include verified location terms only when GPS is supplied; never include names of individual people.",
+      description: "Concise IPTC keywords describing the finished JPEG. Include location terms only when the location is verified; never include names of individual people.",
     },
     inferredLocation: {
       type: "object",
@@ -97,6 +97,26 @@ const EDIT_SCHEMA = {
       required: ["city", "stateProvince", "country", "isoCountryCode"],
     },
   },
+} as const
+
+const ADJUSTMENT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: Object.fromEntries(
+    Object.entries(EDIT_SCHEMA.properties).filter(([name]) => !["description", "keywords", "inferredLocation", "location"].includes(name)),
+  ),
+} as const
+
+const METADATA_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    description: EDIT_SCHEMA.properties.description,
+    keywords: EDIT_SCHEMA.properties.keywords,
+    inferredLocation: EDIT_SCHEMA.properties.inferredLocation,
+    location: EDIT_SCHEMA.properties.location,
+  },
+  required: ["keywords"],
 } as const
 
 type Edit = {
@@ -160,6 +180,7 @@ type Job = {
   group?: { type: "single" | "bracket"; indices: number[] }
   descriptions: Set<string>
   keywordSets: Set<string>
+  pending?: { group: { type: "single" | "bracket"; indices: number[] }; selectedIndex: number }
 }
 
 const jobs = new Map<string, Job>()
@@ -270,9 +291,7 @@ function currentResult(job: Job, message: string) {
       return `${offset}: ${path.basename(entry.raw)} (${bias}${gps}${description}${creator})`
     })
     .join("\n")
-  const metadataInstruction = entries.some((entry) => entry.gps)
-    ? `Independently research this selected photo using its supplied GPS coordinates. Fill location fields only if the exact location can be verified; otherwise omit all generated location fields and location Description. Image recognition may identify a named landmark, building, park, venue, neighborhood, or site as Sublocation only with greater than 90% confidence; supply sublocationConfidence, or leave Sublocation blank. Never put latitude, longitude, GPS coordinates, or coordinate notation in Description. Do not reuse another photo's identification or metadata, and never identify individual people.`
-    : `Independently evaluate this selected photo and its source Description, if supplied. Fill location fields only if the exact location can be verified; otherwise omit all generated location fields and location Description. Image recognition may identify a named landmark, building, park, venue, neighborhood, or site as Sublocation only with greater than 90% confidence; supply sublocationConfidence, or leave Sublocation blank. A visually inferred location still requires greater than 90% confidence and verified WGS-84 coordinates in inferredLocation, but coordinates must never appear in Description. Do not reuse another photo's identification or metadata.`
+  const metadataInstruction = `Use these preview(s) only to choose the exposure and image adjustments. Identification and metadata must wait until the finished JPEG is saved and returned.`
   const instruction = group.type === "bracket"
     ? `This is a five-shot bracket set. Compare all five attached previews and call raw_photo_processor_apply with selectedOffset 0-4 for the best usable exposure. Only that frame will be processed.`
     : `Analyze the attached preview, then call raw_photo_processor_apply with realistic Camera Raw values and a 3:2 crop.`
@@ -392,12 +411,6 @@ async function applyEdit(pluginDirectory: string, entry: JobEntry, edit: Edit, o
 
   await writeFile(sidecar, cameraRawXmp(edit), "utf8")
   try {
-    const inferred = !entry.gps
-      && edit.inferredLocation
-      && edit.inferredLocation.confidence > 0.9
-      ? edit.inferredLocation
-      : undefined
-    const hasLocation = Boolean(edit.location && (entry.gps || inferred || entry.sourceDescription))
     await runPhotoshop(pluginDirectory, "process.jsx", {
       input: entry.raw,
       psd: entry.psd,
@@ -408,21 +421,49 @@ async function applyEdit(pluginDirectory: string, entry: JobEntry, edit: Edit, o
       cropCenterX: clamp(edit.cropCenterX, 0.5, 0, 1),
       cropCenterY: clamp(edit.cropCenterY, 0.5, 0, 1),
       cropScale: clamp(edit.cropScale, 0.96, 0.5, 1),
-      description: hasLocation && typeof edit.description === "string" ? edit.description.trim() : null,
-      keywords: [...new Set((edit.keywords ?? []).map((keyword) => keyword.trim()).filter(Boolean))].slice(0, 30),
-      gps: inferred ? { latitude: inferred.latitude, longitude: inferred.longitude } : null,
-      location: hasLocation && edit.location ? {
-        sublocation: edit.location.sublocation?.trim() || null,
-        city: edit.location.city.trim(),
-        stateProvince: edit.location.stateProvince.trim(),
-        country: edit.location.country.trim(),
-        isoCountryCode: edit.location.isoCountryCode.trim().toUpperCase(),
-      } : null,
-      creator: entry.creator,
     }, signal)
   } finally {
     if (previous) await writeFile(sidecar, previous)
     else await rm(sidecar, { force: true })
+  }
+}
+
+async function updateOutputMetadata(pluginDirectory: string, entry: JobEntry, edit: Edit, signal: AbortSignal) {
+  const inferred = !entry.gps
+    && edit.inferredLocation
+    && edit.inferredLocation.confidence > 0.9
+    ? edit.inferredLocation
+    : undefined
+  const hasLocation = Boolean(edit.location && (entry.gps || inferred || entry.sourceDescription))
+  await runPhotoshop(pluginDirectory, "update-metadata.jsx", {
+    psd: entry.psd,
+    jpeg: entry.jpeg,
+    description: hasLocation && typeof edit.description === "string" ? edit.description.trim() : null,
+    keywords: [...new Set((edit.keywords ?? []).map((keyword) => keyword.trim()).filter(Boolean))].slice(0, 30),
+    gps: inferred ? { latitude: inferred.latitude, longitude: inferred.longitude } : null,
+    location: hasLocation && edit.location ? {
+      sublocation: edit.location.sublocation?.trim() || null,
+      city: edit.location.city.trim(),
+      stateProvince: edit.location.stateProvince.trim(),
+      country: edit.location.country.trim(),
+      isoCountryCode: edit.location.isoCountryCode.trim().toUpperCase(),
+    } : null,
+    creator: entry.creator,
+  }, signal)
+}
+
+function metadataResult(job: Job, entry: JobEntry) {
+  const gps = entry.gps
+    ? `${entry.gps.latitude.toFixed(6)}, ${entry.gps.longitude.toFixed(6)}`
+    : "none"
+  return {
+    content: [
+      {
+        type: "text",
+        text: `PSD and JPEG have now been saved. Use only the attached final JPEG for visual identification, then call raw_photo_processor_finalize_metadata.\nJob: ${job.id}\nJPEG: ${entry.jpeg}\nSource GPS: ${gps}\nSource Description: ${entry.sourceDescription ?? "none"}\nCreator: ${entry.creator ?? "none"}\nPerform a fresh per-photo lookup. Do not identify individual people or put coordinates in Description.`,
+      },
+      { type: "file", uri: pathToFileURL(entry.jpeg).href, mime: "image/jpeg", name: path.basename(entry.jpeg) },
+    ],
   }
 }
 
@@ -465,7 +506,7 @@ export default definePlugin({
           await ctx.session.prompt({
             sessionID,
             delivery,
-            text: `Run the RAW photo workflow for exactly this folder: ${JSON.stringify(folder)}. Call raw_photo_processor_start once. For each result, independently assess that photo's exposure, white balance, tonal recovery, restrained color, local contrast, horizon angle, composition, subject, and metadata; do not carry forward another photo's choices or place identification. A five-preview result is a bracket set: compare all five, choose the best exposure, and pass its 0-based selectedOffset to raw_photo_processor_apply so only that frame is processed. Perform a fresh location lookup for every selected photo. GPS and source Description may be used, but if the exact location cannot be verified, omit all generated location data and location Description. Image recognition is permitted to identify a landmark, building, park, venue, neighborhood, or site as Sublocation only with strictly greater than 90% confidence; provide sublocationConfidence with Sublocation, otherwise leave Sublocation blank. Without GPS, inferredLocation remains permitted only above 90% confidence with verified WGS-84 coordinates. Coordinates are metadata only: never write latitude, longitude, GPS coordinates, decimal coordinate pairs, or coordinate notation in Description. Create unique photo-specific metadata, never copy a Description or complete keyword set, and never identify individual people; use generic terms such as person, people, or crowd. Repeat until completion. Keep edits photorealistic; avoid clipping, halos, excessive saturation, and aggressive dehaze. Do not claim completion unless every image is completed or explicitly reported as skipped/failed.`,
+            text: `Run the RAW photo workflow for exactly this folder: ${JSON.stringify(folder)}. Call raw_photo_processor_start once. This is a strict two-phase workflow for each selected photo. First use the temporary preview(s) only to choose the best bracket exposure and realistic Camera Raw/crop adjustments, then call raw_photo_processor_apply. That tool saves both PSD and JPEG and returns the finished JPEG. Second, use only that finished JPEG for all visual identification, perform a fresh per-photo location lookup, and call raw_photo_processor_finalize_metadata; metadata is written to both already-saved files only in this second phase. If exact location cannot be verified, omit location fields and location Description. Sublocation image recognition requires confidence strictly above 90%; otherwise leave it blank. Never put coordinates in Description, copy another photo's metadata, or identify individual people. Repeat both phases until completion, and do not claim completion unless every image is completed or explicitly skipped/failed.`,
           })
         },
       })
@@ -555,7 +596,7 @@ export default definePlugin({
 
       editor.add({
         name: "apply",
-        description: "Apply visually selected Camera Raw settings, optics corrections, straightening, and a 3:2 crop; save PSD and JPEG; then return the next preview.",
+        description: "Apply image adjustments and save PSD/JPEG without generated metadata, then return the finished JPEG for identification.",
         options: { namespace: "raw_photo_processor", codemode: true },
         input: {
           type: "object",
@@ -563,13 +604,14 @@ export default definePlugin({
           properties: {
             jobID: { type: "string" },
             selectedOffset: { type: "integer", minimum: 0, maximum: 4, description: "For a five-shot bracket set, the 0-based preview offset with the best exposure. Use 0 for a normal single image." },
-            edit: EDIT_SCHEMA,
+            edit: ADJUSTMENT_SCHEMA,
           },
           required: ["jobID", "edit"],
         },
         execute: async (input: { jobID: string; selectedOffset?: number; edit: Edit }, context) => {
           const job = jobs.get(input.jobID)
           if (!job) throw new Error("Unknown or completed RAW processing job.")
+          if (job.pending) throw new Error("Finalize metadata for the already-saved JPEG before processing another image.")
           const group = job.group ?? { type: "single" as const, indices: [job.index] }
           const selectedOffset = group.type === "bracket" ? input.selectedOffset : 0
           if (group.type === "bracket" && (!Number.isInteger(selectedOffset) || selectedOffset! < 0 || selectedOffset! > 4)) {
@@ -577,22 +619,45 @@ export default definePlugin({
           }
           const selectedIndex = group.indices[selectedOffset ?? 0]
           const entry = job.entries[selectedIndex]
-          const keywords = [...new Set((input.edit.keywords ?? []).map((keyword) => keyword.trim()).filter(Boolean))]
+          await context.progress({ status: `Processing selected exposure ${path.basename(entry.raw)} (${selectedIndex + 1}/${job.entries.length})` })
+          await applyEdit(pluginDirectory, entry, input.edit, job.overwrite, context.signal)
+          job.pending = { group, selectedIndex }
+          return metadataResult(job, entry)
+        },
+      })
+
+      editor.add({
+        name: "finalize_metadata",
+        description: "After visually identifying the finished JPEG, update metadata on both the already-saved PSD and JPEG, then continue the batch.",
+        options: { namespace: "raw_photo_processor", codemode: true },
+        input: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            jobID: { type: "string" },
+            metadata: METADATA_SCHEMA,
+          },
+          required: ["jobID", "metadata"],
+        },
+        execute: async (input: { jobID: string; metadata: Edit }, context) => {
+          const job = jobs.get(input.jobID)
+          if (!job) throw new Error("Unknown or completed RAW processing job.")
+          if (!job.pending) throw new Error("Process and save an image before finalizing its metadata.")
+          const { group, selectedIndex } = job.pending
+          const entry = job.entries[selectedIndex]
+          const edit = input.metadata
+          const keywords = [...new Set((edit.keywords ?? []).map((keyword) => keyword.trim()).filter(Boolean))]
           if (!keywords.length) throw new Error("Provide at least one non-identifying subject keyword for the selected image.")
-          const inferred = input.edit.inferredLocation
-          if (inferred && entry.gps) {
-            throw new Error("Do not infer landmark GPS when the source already contains GPS coordinates.")
-          }
+          const inferred = edit.inferredLocation
+          if (inferred && entry.gps) throw new Error("Do not infer landmark GPS when the source already contains GPS coordinates.")
           if (inferred && (!(inferred.confidence > 0.9) || !Number.isFinite(inferred.latitude) || !Number.isFinite(inferred.longitude))) {
             throw new Error("Inferred landmark location requires confidence greater than 0.90 and valid verified coordinates.")
           }
-          const location = input.edit.location
+          const location = edit.location
           const descriptionLocation = Boolean(entry.sourceDescription?.trim() && location)
           const hasKnownLocation = Boolean(location && (entry.gps || inferred || descriptionLocation))
           if (inferred && !location) throw new Error("A verified inferred location requires complete structured location metadata.")
-          if (inferred && !location?.sublocation?.trim()) {
-            throw new Error("A verified inferred landmark requires its specific name in Sublocation.")
-          }
+          if (inferred && !location?.sublocation?.trim()) throw new Error("A verified inferred landmark requires its specific name in Sublocation.")
           if (location) {
             const fields = [location.city, location.stateProvince, location.country, location.isoCountryCode]
             if (fields.some((field) => typeof field !== "string" || !field.trim())) {
@@ -612,27 +677,25 @@ export default definePlugin({
               throw new Error("Do not provide sublocationConfidence when Sublocation is blank.")
             }
           }
-          if (hasKnownLocation && !input.edit.description?.trim()) {
-            throw new Error("A source or confidently inferred location is available; provide a location-informed, non-identifying description.")
+          if (hasKnownLocation && !edit.description?.trim()) {
+            throw new Error("A verified location requires a location-informed, non-identifying Description.")
           }
-          if (!hasKnownLocation && input.edit.description?.trim()) {
+          if (!hasKnownLocation && edit.description?.trim()) {
             throw new Error("Omit Description when an exact location cannot be verified and structured location metadata is blank.")
           }
-          if (input.edit.description && descriptionContainsCoordinates(input.edit.description)) {
+          if (edit.description && descriptionContainsCoordinates(edit.description)) {
             throw new Error("Description must not contain GPS coordinates, latitude/longitude labels, or coordinate notation.")
           }
-          const descriptionFingerprint = input.edit.description?.trim()
-            ? normalizeMetadataText(input.edit.description)
-            : undefined
+          const descriptionFingerprint = edit.description?.trim() ? normalizeMetadataText(edit.description) : undefined
           const keywordsFingerprint = keywordFingerprint(keywords)
           if (descriptionFingerprint && job.descriptions.has(descriptionFingerprint)) {
-            throw new Error("This Description duplicates an earlier processed photo. Reassess this image and provide a unique, photo-specific Description.")
+            throw new Error("This Description duplicates an earlier processed photo. Provide a unique, photo-specific Description.")
           }
           if (job.keywordSets.has(keywordsFingerprint)) {
-            throw new Error("This complete keyword set duplicates an earlier processed photo. Reassess this image and provide a unique, photo-specific keyword set.")
+            throw new Error("This complete keyword set duplicates an earlier processed photo. Provide a unique, photo-specific keyword set.")
           }
-          await context.progress({ status: `Processing selected exposure ${path.basename(entry.raw)} (${selectedIndex + 1}/${job.entries.length})` })
-          await applyEdit(pluginDirectory, entry, input.edit, job.overwrite, context.signal)
+          await context.progress({ status: `Updating metadata after JPEG save: ${path.basename(entry.jpeg)}` })
+          await updateOutputMetadata(pluginDirectory, entry, edit, context.signal)
           if (descriptionFingerprint) job.descriptions.add(descriptionFingerprint)
           job.keywordSets.add(keywordsFingerprint)
           job.completed.push({ raw: entry.raw, psd: entry.psd, jpeg: entry.jpeg })
@@ -643,6 +706,7 @@ export default definePlugin({
           }
           job.index = group.indices[group.indices.length - 1] + 1
           job.group = undefined
+          job.pending = undefined
           await nextUnprocessed(job)
           if (job.index >= job.entries.length) {
             jobs.delete(job.id)
@@ -653,7 +717,7 @@ export default definePlugin({
           }
           await context.progress({ status: `Reading metadata and creating preview(s) at image ${job.index + 1} of ${job.entries.length}` })
           await prepareCurrent(pluginDirectory, job, context.signal)
-          return currentResult(job, `Saved ${path.basename(entry.psd)} and JPEGs/${path.basename(entry.jpeg)}.`)
+          return currentResult(job, `Metadata updated after save for ${path.basename(entry.psd)} and JPEGs/${path.basename(entry.jpeg)}.`)
         },
       })
 

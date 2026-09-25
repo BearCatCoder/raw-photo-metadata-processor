@@ -17,6 +17,8 @@ The command defaults to `openai/gpt-6-luna` and falls back to `openai/gpt-5.6-te
 
 Existing outputs are skipped by default. The RAW file is never modified. A temporary `.xmp` sidecar is used to pass settings to Camera Raw; an existing sidecar is restored byte-for-byte after the RAW is opened.
 
+Processing uses a strict two-phase workflow. First, temporary JPEG previews are used only to select bracket exposure and image adjustments; Photoshop then saves the PSD followed by the maximum-quality JPEG. Second, the finished JPEG—not the RAW or PSD—is returned to the model for visual identification. Only after that identification does the plugin reopen both saved outputs and write matching metadata to the PSD and JPEG.
+
 Before processing, the plugin reads the Exposure Bias metadata up to five images ahead. A `0 EV` image followed by four non-zero-EV images is treated as one bracket set. The model compares all five previews, processes only the best exposure, and skips the other four. Non-zero frames encountered shortly before a new `0 EV` image are treated as an incomplete bracket run and skipped.
 
 When GPS coordinates are present, they are shown to the model so it can research the general subject/location and write an objective IPTC Description plus relevant subject and location keywords. The model is explicitly prohibited from identifying individual people.
