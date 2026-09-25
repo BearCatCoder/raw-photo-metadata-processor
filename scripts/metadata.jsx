@@ -101,16 +101,18 @@
             var latitude = null;
             var longitude = null;
             var sourceDescription = "";
+            var creator = "";
             try {
                 doc = app.open(new File(RPP_CONFIG.inputs[index]));
                 bias = readBias(doc);
                 latitude = readCoordinate(doc, "latitude");
                 longitude = readCoordinate(doc, "longitude");
                 try { sourceDescription = String(doc.info.caption || "").replace(/[\t\r\n]+/g, " "); } catch (_) {}
+                try { creator = String(doc.info.author || "").replace(/[\t\r\n]+/g, " "); } catch (_) {}
             } finally {
                 if (doc) doc.close(SaveOptions.DONOTSAVECHANGES);
             }
-            output.writeln(index + "\t" + (bias === null ? "" : String(bias)) + "\t" + (latitude === null ? "" : String(latitude)) + "\t" + (longitude === null ? "" : String(longitude)) + "\t" + sourceDescription);
+            output.writeln(index + "\t" + (bias === null ? "" : String(bias)) + "\t" + (latitude === null ? "" : String(latitude)) + "\t" + (longitude === null ? "" : String(longitude)) + "\t" + sourceDescription + "\t" + creator);
         }
     } finally {
         output.close();

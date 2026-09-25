@@ -141,6 +141,7 @@ type JobEntry = {
   exposureBias?: number | null
   gps?: { latitude: number; longitude: number } | null
   sourceDescription?: string | null
+  creator?: string | null
 }
 
 type Job = {
@@ -261,7 +262,8 @@ function currentResult(job: Job, message: string) {
       const bias = entry.exposureBias === null ? "unknown" : `${entry.exposureBias ?? 0} EV`
       const gps = entry.gps ? `; GPS ${entry.gps.latitude.toFixed(6)}, ${entry.gps.longitude.toFixed(6)}` : "; no GPS"
       const description = entry.sourceDescription ? `; source Description: ${entry.sourceDescription.slice(0, 500)}` : "; no source Description"
-      return `${offset}: ${path.basename(entry.raw)} (${bias}${gps}${description})`
+      const creator = entry.creator ? `; Creator: ${entry.creator}` : "; no Creator"
+      return `${offset}: ${path.basename(entry.raw)} (${bias}${gps}${description}${creator})`
     })
     .join("\n")
   const metadataInstruction = entries.some((entry) => entry.gps)
@@ -293,7 +295,8 @@ function keywordFingerprint(keywords: string[]) {
 async function ensureMetadata(pluginDirectory: string, job: Job, indices: number[], signal: AbortSignal) {
   const missing = indices.filter((index) => {
     const entry = job.entries[index]
-    return entry?.exposureBias === undefined || entry?.gps === undefined || entry?.sourceDescription === undefined
+    return entry?.exposureBias === undefined || entry?.gps === undefined
+      || entry?.sourceDescription === undefined || entry?.creator === undefined
   })
   if (!missing.length) return
   const output = path.join(job.work, `metadata-${missing[0]}-${missing.length}.tsv`)
@@ -304,7 +307,7 @@ async function ensureMetadata(pluginDirectory: string, job: Job, indices: number
   const lines = (await readFile(output, "utf8")).split(/\r?\n/)
   for (const line of lines) {
     if (!line) continue
-    const [positionText, biasText = "", latitudeText = "", longitudeText = "", descriptionText = ""] = line.split("\t")
+    const [positionText, biasText = "", latitudeText = "", longitudeText = "", descriptionText = "", creatorText = ""] = line.split("\t")
     const position = Number(positionText)
     if (!Number.isInteger(position) || position < 0 || position >= missing.length) continue
     const bias = Number(biasText)
@@ -318,11 +321,13 @@ async function ensureMetadata(pluginDirectory: string, job: Job, indices: number
       ? { latitude, longitude }
       : null
     entry.sourceDescription = descriptionText.trim() || null
+    entry.creator = creatorText.trim() || null
   }
   for (const index of missing) {
     if (job.entries[index].exposureBias === undefined) job.entries[index].exposureBias = null
     if (job.entries[index].gps === undefined) job.entries[index].gps = null
     if (job.entries[index].sourceDescription === undefined) job.entries[index].sourceDescription = null
+    if (job.entries[index].creator === undefined) job.entries[index].creator = null
   }
   await rm(output, { force: true })
 }
@@ -402,6 +407,7 @@ async function applyEdit(pluginDirectory: string, entry: JobEntry, edit: Edit, o
         country: edit.location.country.trim(),
         isoCountryCode: edit.location.isoCountryCode.trim().toUpperCase(),
       } : null,
+      creator: entry.creator,
     }, signal)
   } finally {
     if (previous) await writeFile(sidecar, previous)
