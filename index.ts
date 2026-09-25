@@ -134,6 +134,8 @@ type Job = {
   completed: Array<{ raw: string; psd: string; jpeg: string }>
   skipped: Array<{ raw: string; reason: string }>
   group?: { type: "single" | "bracket"; indices: number[] }
+  descriptions: Set<string>
+  keywordSets: Set<string>
 }
 
 const jobs = new Map<string, Job>()
@@ -243,8 +245,8 @@ function currentResult(job: Job, message: string) {
     })
     .join("\n")
   const metadataInstruction = entries.some((entry) => entry.gps)
-    ? `Use the supplied GPS coordinates to research/identify the general subject and location. Add an objective description and relevant subject/location keywords. Never identify individual people; describe them only generically.`
-    : `No GPS coordinates are available. If—and only if—a distinctive landmark can be identified with greater than 90% certainty, verify its WGS-84 coordinates, provide inferredLocation, and act as though GPS existed by adding a location-aware description and keywords. Otherwise omit inferredLocation and description, and add visual-subject keywords with no guessed location.`
+    ? `Independently research this selected photo using its supplied GPS coordinates. Add an objective, photo-specific description and a photo-specific set of subject/location keywords. Do not reuse another photo's metadata. Never identify individual people; describe them only generically.`
+    : `Independently evaluate this selected photo. If—and only if—a distinctive landmark can be identified with greater than 90% certainty, separately verify its WGS-84 coordinates, provide inferredLocation, and add a photo-specific location-aware description and keywords. Otherwise omit inferredLocation and description, and add a photo-specific visual-subject keyword set with no guessed location. Do not reuse another photo's metadata.`
   const instruction = group.type === "bracket"
     ? `This is a five-shot bracket set. Compare all five attached previews and call raw_photo_processor_apply with selectedOffset 0-4 for the best usable exposure. Only that frame will be processed.`
     : `Analyze the attached preview, then call raw_photo_processor_apply with realistic Camera Raw values and a 3:2 crop.`
@@ -258,6 +260,14 @@ function currentResult(job: Job, message: string) {
 
 function isZeroBias(value: number | null | undefined) {
   return typeof value === "number" && Math.abs(value) < 0.0001
+}
+
+function normalizeMetadataText(value: string) {
+  return value.trim().toLocaleLowerCase().replace(/\s+/g, " ")
+}
+
+function keywordFingerprint(keywords: string[]) {
+  return [...new Set(keywords.map(normalizeMetadataText).filter(Boolean))].sort().join("\u001f")
 }
 
 async function ensureMetadata(pluginDirectory: string, job: Job, indices: number[], signal: AbortSignal) {
@@ -407,7 +417,7 @@ export default definePlugin({
           await ctx.session.prompt({
             sessionID,
             delivery,
-            text: `Run the RAW photo workflow for exactly this folder: ${JSON.stringify(folder)}. Call raw_photo_processor_start once. For each result, assess exposure, white balance, tonal recovery, restrained color, local contrast, horizon angle, and composition. A five-preview result is a bracket set: compare all five, choose the best exposure, and pass its 0-based selectedOffset to raw_photo_processor_apply so only that frame is processed. When GPS is supplied, use it to research the general place/subject and provide an objective description plus subject/location keywords. Without GPS, first assess whether a distinctive landmark can be identified with greater than 90% certainty. Only above that threshold, verify the landmark's WGS-84 coordinates, provide inferredLocation, and add a location-aware description and keywords; the plugin will embed those coordinates. Otherwise omit inferredLocation and description and provide visual-subject keywords without a guessed location. Never identify or name individual people; use generic terms such as person, people, or crowd. Repeat until completion. Keep edits photorealistic; avoid clipping, halos, excessive saturation, and aggressive dehaze. Do not claim completion unless every image is completed or explicitly reported as skipped/failed.`,
+            text: `Run the RAW photo workflow for exactly this folder: ${JSON.stringify(folder)}. Call raw_photo_processor_start once. For each result, independently assess that photo's exposure, white balance, tonal recovery, restrained color, local contrast, horizon angle, composition, subject, and metadata; do not carry forward another photo's choices. A five-preview result is a bracket set: compare all five, choose the best exposure, and pass its 0-based selectedOffset to raw_photo_processor_apply so only that frame is processed. For every selected photo with GPS, perform a fresh lookup using its coordinates and create a unique objective Description and unique photo-specific subject/location keyword set. Without GPS, separately assess whether a distinctive landmark can be identified with greater than 90% certainty. Only above that threshold, perform a fresh verification lookup of the landmark and its WGS-84 coordinates, provide inferredLocation, and create unique location-aware metadata; otherwise omit inferredLocation and Description and create a unique visual-subject keyword set without a guessed location. Never copy a Description or complete keyword set between photos. Never identify or name individual people; use generic terms such as person, people, or crowd. Repeat until completion. Keep edits photorealistic; avoid clipping, halos, excessive saturation, and aggressive dehaze. Do not claim completion unless every image is completed or explicitly reported as skipped/failed.`,
           })
         },
       })
@@ -464,7 +474,18 @@ export default definePlugin({
               preview: path.join(work, `${String(index + 1).padStart(5, "0")}.jpg`),
             }
           })
-          const job: Job = { id, folder, work, entries, index: 0, overwrite: input.overwrite === true, completed: [], skipped: [] }
+          const job: Job = {
+            id,
+            folder,
+            work,
+            entries,
+            index: 0,
+            overwrite: input.overwrite === true,
+            completed: [],
+            skipped: [],
+            descriptions: new Set(),
+            keywordSets: new Set(),
+          }
           jobs.set(id, job)
           try {
             await nextUnprocessed(job)
@@ -520,8 +541,20 @@ export default definePlugin({
           if ((entry.gps || inferred) && !input.edit.description?.trim()) {
             throw new Error("A source or confidently inferred location is available; provide a location-informed, non-identifying description.")
           }
+          const descriptionFingerprint = input.edit.description?.trim()
+            ? normalizeMetadataText(input.edit.description)
+            : undefined
+          const keywordsFingerprint = keywordFingerprint(keywords)
+          if (descriptionFingerprint && job.descriptions.has(descriptionFingerprint)) {
+            throw new Error("This Description duplicates an earlier processed photo. Reassess this image and provide a unique, photo-specific Description.")
+          }
+          if (job.keywordSets.has(keywordsFingerprint)) {
+            throw new Error("This complete keyword set duplicates an earlier processed photo. Reassess this image and provide a unique, photo-specific keyword set.")
+          }
           await context.progress({ status: `Processing selected exposure ${path.basename(entry.raw)} (${selectedIndex + 1}/${job.entries.length})` })
           await applyEdit(pluginDirectory, entry, input.edit, job.overwrite, context.signal)
+          if (descriptionFingerprint) job.descriptions.add(descriptionFingerprint)
+          job.keywordSets.add(keywordsFingerprint)
           job.completed.push({ raw: entry.raw, psd: entry.psd, jpeg: entry.jpeg })
           if (group.type === "bracket") {
             for (const index of group.indices) {
