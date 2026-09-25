@@ -279,7 +279,7 @@ async function makePreview(pluginDirectory: string, entry: JobEntry, signal: Abo
   await stat(entry.preview)
 }
 
-function currentResult(job: Job, message: string) {
+function currentPromptText(job: Job, message: string) {
   const group = job.group ?? { type: "single" as const, indices: [job.index] }
   const entries = group.indices.map((index) => job.entries[index])
   const exposureSummary = entries
@@ -295,9 +295,15 @@ function currentResult(job: Job, message: string) {
   const instruction = group.type === "bracket"
     ? `This is a five-shot bracket set. Compare all five attached previews and call raw_photo_processor_apply with selectedOffset 0-4 for the best usable exposure. Only that frame will be processed.`
     : `Analyze the attached preview, then call raw_photo_processor_apply with realistic Camera Raw values and a 3:2 crop.`
+  return `${message}\nJob: ${job.id}\nSequence position ${job.index + 1} of ${job.entries.length}:\n${exposureSummary}\n${instruction}\n${metadataInstruction}`
+}
+
+function currentResult(job: Job, message: string) {
+  const group = job.group ?? { type: "single" as const, indices: [job.index] }
+  const entries = group.indices.map((index) => job.entries[index])
   return {
     content: [
-      { type: "text", text: `${message}\nJob: ${job.id}\nSequence position ${job.index + 1} of ${job.entries.length}:\n${exposureSummary}\n${instruction}\n${metadataInstruction}` },
+      { type: "text", text: currentPromptText(job, message) },
       ...entries.map((entry) => ({ type: "file", uri: pathToFileURL(entry.preview).href, mime: "image/jpeg", name: path.basename(entry.raw) })),
     ],
   }
@@ -495,6 +501,17 @@ export default definePlugin({
     const requestedProvider = requested.shift() ?? ""
     const requestedModel = requested.join("/")
 
+    const queuePreviewAttachments = async (sessionID: string, job: Job, message: string) => {
+      const group = job.group ?? { type: "single" as const, indices: [job.index] }
+      const entries = group.indices.map((index) => job.entries[index])
+      await ctx.session.prompt({
+        sessionID,
+        delivery: "queue",
+        text: `${currentPromptText(job, message)}\nThe JPEG preview files are attached as actual image content. Use the attached images, not their pathnames.`,
+        files: entries.map((entry) => ({ uri: pathToFileURL(entry.preview).href })),
+      })
+    }
+
     await ctx.command.transform((editor) => {
       editor.add({
         name: "raw-photo-processor",
@@ -589,7 +606,9 @@ export default definePlugin({
             }
             await context.progress({ status: `Reading metadata and creating preview(s) at image 1 of ${entries.length}` })
             await prepareCurrent(pluginDirectory, job, context.signal)
-            return currentResult(job, `Found ${entries.length} RAW image(s). Existing outputs are ${job.overwrite ? "replaced" : "skipped"}.`)
+            const message = `Found ${entries.length} RAW image(s). Existing outputs are ${job.overwrite ? "replaced" : "skipped"}.`
+            await queuePreviewAttachments(context.sessionID, job, message)
+            return currentResult(job, message)
           } catch (error) {
             jobs.delete(id)
             await rm(work, { recursive: true, force: true })
@@ -730,7 +749,9 @@ export default definePlugin({
           }
           await context.progress({ status: `Reading metadata and creating preview(s) at image ${job.index + 1} of ${job.entries.length}` })
           await prepareCurrent(pluginDirectory, job, context.signal)
-          return currentResult(job, `Metadata updated after save for ${path.basename(entry.psd)} and JPEGs/${path.basename(entry.jpeg)}.`)
+          const message = `Metadata updated after save for ${path.basename(entry.psd)} and JPEGs/${path.basename(entry.jpeg)}.`
+          await queuePreviewAttachments(context.sessionID, job, message)
+          return currentResult(job, message)
         },
       })
 
