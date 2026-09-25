@@ -23,6 +23,8 @@ When GPS coordinates are present, they are shown to the model so it can research
 
 Without source GPS, a landmark fallback is permitted only when the model can identify a distinctive landmark with greater than 90% certainty. The model must verify the landmark's WGS-84 coordinates; the plugin then embeds those coordinates in the PSD/JPEG XMP metadata and writes the location-aware Description and keywords. Below that threshold, it writes visual-subject keywords only, does not guess a location, and leaves the generated Description empty.
 
+Whenever a location is established from source GPS, a verified landmark, or an existing source Description, the plugin also writes City, State/Province, Country, and the IPTC three-letter ISO Country Code into both output formats.
+
 Every processed photo is independently analyzed and, when a location is available or confidently inferred, independently researched. Descriptions and complete keyword sets must be photo-specific. The plugin rejects an exactly reused Description or identical complete keyword set within the same batch, while allowing individual relevant terms such as a shared city or `landscape` to overlap.
 
 ## Select Terra instead

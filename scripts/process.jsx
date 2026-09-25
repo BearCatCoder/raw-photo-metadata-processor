@@ -81,15 +81,28 @@
         if (RPP_CONFIG.keywords && RPP_CONFIG.keywords.length) {
             doc.info.keywords = RPP_CONFIG.keywords;
         }
-        if (RPP_CONFIG.gps) {
+        if (RPP_CONFIG.gps || RPP_CONFIG.location) {
             if (ExternalObject.AdobeXMPScript === undefined) {
                 ExternalObject.AdobeXMPScript = new ExternalObject("lib:AdobeXMPScript");
             }
-            var exifNamespace = "http://ns.adobe.com/exif/1.0/";
             var xmp = new XMPMeta(doc.xmpMetadata.rawData);
-            xmp.setProperty(exifNamespace, "GPSLatitude", gpsValue(RPP_CONFIG.gps.latitude, "N", "S"));
-            xmp.setProperty(exifNamespace, "GPSLongitude", gpsValue(RPP_CONFIG.gps.longitude, "E", "W"));
-            xmp.setProperty(exifNamespace, "GPSMapDatum", "WGS-84");
+            if (RPP_CONFIG.gps) {
+                var exifNamespace = "http://ns.adobe.com/exif/1.0/";
+                xmp.setProperty(exifNamespace, "GPSLatitude", gpsValue(RPP_CONFIG.gps.latitude, "N", "S"));
+                xmp.setProperty(exifNamespace, "GPSLongitude", gpsValue(RPP_CONFIG.gps.longitude, "E", "W"));
+                xmp.setProperty(exifNamespace, "GPSMapDatum", "WGS-84");
+            }
+            if (RPP_CONFIG.location) {
+                var photoshopNamespace = "http://ns.adobe.com/photoshop/1.0/";
+                var iptcCoreNamespace = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/";
+                doc.info.city = RPP_CONFIG.location.city;
+                doc.info.provinceState = RPP_CONFIG.location.stateProvince;
+                doc.info.country = RPP_CONFIG.location.country;
+                xmp.setProperty(photoshopNamespace, "City", RPP_CONFIG.location.city);
+                xmp.setProperty(photoshopNamespace, "State", RPP_CONFIG.location.stateProvince);
+                xmp.setProperty(photoshopNamespace, "Country", RPP_CONFIG.location.country);
+                xmp.setProperty(iptcCoreNamespace, "CountryCode", RPP_CONFIG.location.isoCountryCode);
+            }
             doc.xmpMetadata.rawData = xmp.serialize();
         }
 

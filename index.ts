@@ -82,6 +82,18 @@ const EDIT_SCHEMA = {
       },
       required: ["landmark", "confidence", "latitude", "longitude"],
     },
+    location: {
+      type: "object",
+      additionalProperties: false,
+      description: "Required when GPS, a verified inferred landmark, or the source Description establishes a location.",
+      properties: {
+        city: { type: "string", minLength: 1, maxLength: 200 },
+        stateProvince: { type: "string", minLength: 1, maxLength: 200 },
+        country: { type: "string", minLength: 1, maxLength: 200 },
+        isoCountryCode: { type: "string", pattern: "^[A-Za-z]{3}$", description: "ISO 3166-1 alpha-3 country code used by IPTC, such as USA, CAN, GBR, or FRA." },
+      },
+      required: ["city", "stateProvince", "country", "isoCountryCode"],
+    },
   },
 } as const
 
@@ -113,6 +125,12 @@ type Edit = {
     latitude: number
     longitude: number
   }
+  location?: {
+    city: string
+    stateProvince: string
+    country: string
+    isoCountryCode: string
+  }
 }
 
 type JobEntry = {
@@ -122,6 +140,7 @@ type JobEntry = {
   preview: string
   exposureBias?: number | null
   gps?: { latitude: number; longitude: number } | null
+  sourceDescription?: string | null
 }
 
 type Job = {
@@ -241,12 +260,13 @@ function currentResult(job: Job, message: string) {
     .map((entry, offset) => {
       const bias = entry.exposureBias === null ? "unknown" : `${entry.exposureBias ?? 0} EV`
       const gps = entry.gps ? `; GPS ${entry.gps.latitude.toFixed(6)}, ${entry.gps.longitude.toFixed(6)}` : "; no GPS"
-      return `${offset}: ${path.basename(entry.raw)} (${bias}${gps})`
+      const description = entry.sourceDescription ? `; source Description: ${entry.sourceDescription.slice(0, 500)}` : "; no source Description"
+      return `${offset}: ${path.basename(entry.raw)} (${bias}${gps}${description})`
     })
     .join("\n")
   const metadataInstruction = entries.some((entry) => entry.gps)
-    ? `Independently research this selected photo using its supplied GPS coordinates. Add an objective, photo-specific description and a photo-specific set of subject/location keywords. Do not reuse another photo's metadata. Never identify individual people; describe them only generically.`
-    : `Independently evaluate this selected photo. If—and only if—a distinctive landmark can be identified with greater than 90% certainty, separately verify its WGS-84 coordinates, provide inferredLocation, and add a photo-specific location-aware description and keywords. Otherwise omit inferredLocation and description, and add a photo-specific visual-subject keyword set with no guessed location. Do not reuse another photo's metadata.`
+    ? `Independently research this selected photo using its supplied GPS coordinates. Add an objective, photo-specific description, subject/location keywords, and verified City, State/Province, Country, and three-letter ISO Country Code. Do not reuse another photo's metadata. Never identify individual people; describe them only generically.`
+    : `Independently evaluate this selected photo and its source Description, if supplied. If the source Description establishes a location, verify it and provide a photo-specific Description, keywords, City, State/Province, Country, and three-letter ISO Country Code. Otherwise, only when a distinctive landmark can be identified with greater than 90% certainty, separately verify its WGS-84 coordinates and provide inferredLocation plus those location fields. If neither condition applies, omit inferredLocation, generated description, and location fields, and add photo-specific visual-subject keywords with no guessed location. Do not reuse another photo's metadata.`
   const instruction = group.type === "bracket"
     ? `This is a five-shot bracket set. Compare all five attached previews and call raw_photo_processor_apply with selectedOffset 0-4 for the best usable exposure. Only that frame will be processed.`
     : `Analyze the attached preview, then call raw_photo_processor_apply with realistic Camera Raw values and a 3:2 crop.`
@@ -271,7 +291,10 @@ function keywordFingerprint(keywords: string[]) {
 }
 
 async function ensureMetadata(pluginDirectory: string, job: Job, indices: number[], signal: AbortSignal) {
-  const missing = indices.filter((index) => job.entries[index]?.exposureBias === undefined || job.entries[index]?.gps === undefined)
+  const missing = indices.filter((index) => {
+    const entry = job.entries[index]
+    return entry?.exposureBias === undefined || entry?.gps === undefined || entry?.sourceDescription === undefined
+  })
   if (!missing.length) return
   const output = path.join(job.work, `metadata-${missing[0]}-${missing.length}.tsv`)
   await runPhotoshop(pluginDirectory, "metadata.jsx", {
@@ -281,7 +304,7 @@ async function ensureMetadata(pluginDirectory: string, job: Job, indices: number
   const lines = (await readFile(output, "utf8")).split(/\r?\n/)
   for (const line of lines) {
     if (!line) continue
-    const [positionText, biasText = "", latitudeText = "", longitudeText = ""] = line.split("\t")
+    const [positionText, biasText = "", latitudeText = "", longitudeText = "", descriptionText = ""] = line.split("\t")
     const position = Number(positionText)
     if (!Number.isInteger(position) || position < 0 || position >= missing.length) continue
     const bias = Number(biasText)
@@ -294,10 +317,12 @@ async function ensureMetadata(pluginDirectory: string, job: Job, indices: number
       && latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180
       ? { latitude, longitude }
       : null
+    entry.sourceDescription = descriptionText.trim() || null
   }
   for (const index of missing) {
     if (job.entries[index].exposureBias === undefined) job.entries[index].exposureBias = null
     if (job.entries[index].gps === undefined) job.entries[index].gps = null
+    if (job.entries[index].sourceDescription === undefined) job.entries[index].sourceDescription = null
   }
   await rm(output, { force: true })
 }
@@ -357,7 +382,7 @@ async function applyEdit(pluginDirectory: string, entry: JobEntry, edit: Edit, o
       && edit.inferredLocation.confidence > 0.9
       ? edit.inferredLocation
       : undefined
-    const hasLocation = Boolean(entry.gps || inferred)
+    const hasLocation = Boolean(entry.gps || inferred || (entry.sourceDescription && edit.location))
     await runPhotoshop(pluginDirectory, "process.jsx", {
       input: entry.raw,
       psd: entry.psd,
@@ -371,6 +396,12 @@ async function applyEdit(pluginDirectory: string, entry: JobEntry, edit: Edit, o
       description: hasLocation && typeof edit.description === "string" ? edit.description.trim() : null,
       keywords: [...new Set((edit.keywords ?? []).map((keyword) => keyword.trim()).filter(Boolean))].slice(0, 30),
       gps: inferred ? { latitude: inferred.latitude, longitude: inferred.longitude } : null,
+      location: hasLocation && edit.location ? {
+        city: edit.location.city.trim(),
+        stateProvince: edit.location.stateProvince.trim(),
+        country: edit.location.country.trim(),
+        isoCountryCode: edit.location.isoCountryCode.trim().toUpperCase(),
+      } : null,
     }, signal)
   } finally {
     if (previous) await writeFile(sidecar, previous)
@@ -417,7 +448,7 @@ export default definePlugin({
           await ctx.session.prompt({
             sessionID,
             delivery,
-            text: `Run the RAW photo workflow for exactly this folder: ${JSON.stringify(folder)}. Call raw_photo_processor_start once. For each result, independently assess that photo's exposure, white balance, tonal recovery, restrained color, local contrast, horizon angle, composition, subject, and metadata; do not carry forward another photo's choices. A five-preview result is a bracket set: compare all five, choose the best exposure, and pass its 0-based selectedOffset to raw_photo_processor_apply so only that frame is processed. For every selected photo with GPS, perform a fresh lookup using its coordinates and create a unique objective Description and unique photo-specific subject/location keyword set. Without GPS, separately assess whether a distinctive landmark can be identified with greater than 90% certainty. Only above that threshold, perform a fresh verification lookup of the landmark and its WGS-84 coordinates, provide inferredLocation, and create unique location-aware metadata; otherwise omit inferredLocation and Description and create a unique visual-subject keyword set without a guessed location. Never copy a Description or complete keyword set between photos. Never identify or name individual people; use generic terms such as person, people, or crowd. Repeat until completion. Keep edits photorealistic; avoid clipping, halos, excessive saturation, and aggressive dehaze. Do not claim completion unless every image is completed or explicitly reported as skipped/failed.`,
+            text: `Run the RAW photo workflow for exactly this folder: ${JSON.stringify(folder)}. Call raw_photo_processor_start once. For each result, independently assess that photo's exposure, white balance, tonal recovery, restrained color, local contrast, horizon angle, composition, subject, and metadata; do not carry forward another photo's choices. A five-preview result is a bracket set: compare all five, choose the best exposure, and pass its 0-based selectedOffset to raw_photo_processor_apply so only that frame is processed. For every selected photo with GPS, perform a fresh lookup using its coordinates and create a unique objective Description, unique subject/location keywords, and verified City, State/Province, Country, and ISO 3166-1 alpha-3 Country Code. Without GPS, inspect the supplied source Description: if it establishes a location, freshly verify it and provide the same structured location fields and unique metadata. Otherwise separately assess whether a distinctive landmark can be identified with greater than 90% certainty; only above that threshold, perform a fresh verification lookup of the landmark and WGS-84 coordinates, provide inferredLocation, and create the same location fields and unique metadata. If no location is established, omit inferredLocation, generated Description, and location fields and create a unique visual-subject keyword set without a guessed location. Never copy a Description or complete keyword set between photos. Never identify or name individual people; use generic terms such as person, people, or crowd. Repeat until completion. Keep edits photorealistic; avoid clipping, halos, excessive saturation, and aggressive dehaze. Do not claim completion unless every image is completed or explicitly reported as skipped/failed.`,
           })
         },
       })
@@ -538,7 +569,25 @@ export default definePlugin({
           if (inferred && (!(inferred.confidence > 0.9) || !Number.isFinite(inferred.latitude) || !Number.isFinite(inferred.longitude))) {
             throw new Error("Inferred landmark location requires confidence greater than 0.90 and valid verified coordinates.")
           }
-          if ((entry.gps || inferred) && !input.edit.description?.trim()) {
+          const location = input.edit.location
+          const descriptionLocation = Boolean(entry.sourceDescription?.trim() && location)
+          const hasKnownLocation = Boolean(entry.gps || inferred || descriptionLocation)
+          if ((entry.gps || inferred) && !location) {
+            throw new Error("A GPS-based location requires City, State/Province, Country, and ISO Country Code.")
+          }
+          if (location) {
+            const fields = [location.city, location.stateProvince, location.country, location.isoCountryCode]
+            if (fields.some((field) => typeof field !== "string" || !field.trim())) {
+              throw new Error("Location metadata requires non-empty City, State/Province, Country, and ISO Country Code fields.")
+            }
+            if (!/^[A-Za-z]{3}$/.test(location.isoCountryCode.trim())) {
+              throw new Error("ISO Country Code must be an ISO 3166-1 alpha-3 code such as USA, CAN, GBR, or FRA.")
+            }
+            if (!entry.gps && !inferred && !entry.sourceDescription?.trim()) {
+              throw new Error("Do not add location fields without source GPS, a verified inferred landmark, or a source Description establishing the location.")
+            }
+          }
+          if (hasKnownLocation && !input.edit.description?.trim()) {
             throw new Error("A source or confidently inferred location is available; provide a location-informed, non-identifying description.")
           }
           const descriptionFingerprint = input.edit.description?.trim()

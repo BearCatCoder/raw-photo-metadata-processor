@@ -100,15 +100,17 @@
             var bias = null;
             var latitude = null;
             var longitude = null;
+            var sourceDescription = "";
             try {
                 doc = app.open(new File(RPP_CONFIG.inputs[index]));
                 bias = readBias(doc);
                 latitude = readCoordinate(doc, "latitude");
                 longitude = readCoordinate(doc, "longitude");
+                try { sourceDescription = String(doc.info.caption || "").replace(/[\t\r\n]+/g, " "); } catch (_) {}
             } finally {
                 if (doc) doc.close(SaveOptions.DONOTSAVECHANGES);
             }
-            output.writeln(index + "\t" + (bias === null ? "" : String(bias)) + "\t" + (latitude === null ? "" : String(latitude)) + "\t" + (longitude === null ? "" : String(longitude)));
+            output.writeln(index + "\t" + (bias === null ? "" : String(bias)) + "\t" + (latitude === null ? "" : String(latitude)) + "\t" + (longitude === null ? "" : String(longitude)) + "\t" + sourceDescription);
         }
     } finally {
         output.close();
