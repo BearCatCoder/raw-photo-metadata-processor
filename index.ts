@@ -162,6 +162,7 @@ type JobEntry = {
   psd: string
   jpeg: string
   preview: string
+  identificationPreview: string
   exposureBias?: number | null
   gps?: { latitude: number; longitude: number } | null
   sourceDescription?: string | null
@@ -277,6 +278,11 @@ async function runPhotoshop(pluginDirectory: string, script: string, config: unk
 async function makePreview(pluginDirectory: string, entry: JobEntry, signal: AbortSignal) {
   await runPhotoshop(pluginDirectory, "preview.jsx", { input: entry.raw, output: entry.preview }, signal)
   await stat(entry.preview)
+}
+
+async function makeIdentificationPreview(pluginDirectory: string, entry: JobEntry, signal: AbortSignal) {
+  await runPhotoshop(pluginDirectory, "preview.jsx", { input: entry.jpeg, output: entry.identificationPreview }, signal)
+  await stat(entry.identificationPreview)
 }
 
 function currentPromptText(job: Job, message: string) {
@@ -458,7 +464,7 @@ function metadataPromptText(job: Job, entry: JobEntry) {
   const gps = entry.gps
     ? `${entry.gps.latitude.toFixed(6)}, ${entry.gps.longitude.toFixed(6)}`
     : "none"
-  return `The finished JPEG is attached as image content. Use this attached image—not a pathname—for visual identification, then call raw_photo_processor_finalize_metadata.\nJob: ${job.id}\nSource GPS: ${gps}\nSource Description: ${entry.sourceDescription ?? "none"}\nCreator: ${entry.creator ?? "none"}\nPerform a fresh per-photo lookup. Do not identify individual people or put coordinates in Description.`
+  return `An attachment-safe JPEG rendered directly from the finished full-resolution JPEG is attached as image content. It preserves the finished composition and is scaled only for visual identification. Use this attached image—not a pathname—for identification, then call raw_photo_processor_finalize_metadata. Metadata will be written to the original full-resolution PSD and quality-12 JPEG.\nJob: ${job.id}\nSource GPS: ${gps}\nSource Description: ${entry.sourceDescription ?? "none"}\nCreator: ${entry.creator ?? "none"}\nPerform a fresh per-photo lookup. Do not identify individual people or put coordinates in Description.`
 }
 
 function metadataResult(job: Job, entry: JobEntry) {
@@ -572,6 +578,7 @@ export default definePlugin({
               psd: path.join(folder, "PSDs", `${stem}.psd`),
               jpeg: path.join(folder, "JPEGs", `${stem}.jpg`),
               preview: path.join(work, `${String(index + 1).padStart(5, "0")}.jpg`),
+              identificationPreview: path.join(work, `${String(index + 1).padStart(5, "0")}-finished.jpg`),
             }
           })
           const job: Job = {
@@ -634,6 +641,8 @@ export default definePlugin({
           const entry = job.entries[selectedIndex]
           await context.progress({ status: `Processing selected exposure ${path.basename(entry.raw)} (${selectedIndex + 1}/${job.entries.length})` })
           await applyEdit(pluginDirectory, entry, input.edit, job.overwrite, context.signal)
+          await context.progress({ status: `Creating attachment-safe identification JPEG for ${path.basename(entry.jpeg)}` })
+          await makeIdentificationPreview(pluginDirectory, entry, context.signal)
           job.pending = { group, selectedIndex }
           // Code Mode can reduce rich tool output to a pathname. Queue the finished
           // JPEG as a real session attachment so the next model turn receives image
@@ -642,7 +651,7 @@ export default definePlugin({
             sessionID: context.sessionID,
             delivery: "queue",
             text: metadataPromptText(job, entry),
-            files: [{ uri: pathToFileURL(entry.jpeg).href }],
+            files: [{ uri: pathToFileURL(entry.identificationPreview).href }],
           })
           return metadataResult(job, entry)
         },
