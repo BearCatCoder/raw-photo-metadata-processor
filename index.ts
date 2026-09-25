@@ -452,15 +452,19 @@ async function updateOutputMetadata(pluginDirectory: string, entry: JobEntry, ed
   }, signal)
 }
 
-function metadataResult(job: Job, entry: JobEntry) {
+function metadataPromptText(job: Job, entry: JobEntry) {
   const gps = entry.gps
     ? `${entry.gps.latitude.toFixed(6)}, ${entry.gps.longitude.toFixed(6)}`
     : "none"
+  return `The finished JPEG is attached as image content. Use this attached image—not a pathname—for visual identification, then call raw_photo_processor_finalize_metadata.\nJob: ${job.id}\nSource GPS: ${gps}\nSource Description: ${entry.sourceDescription ?? "none"}\nCreator: ${entry.creator ?? "none"}\nPerform a fresh per-photo lookup. Do not identify individual people or put coordinates in Description.`
+}
+
+function metadataResult(job: Job, entry: JobEntry) {
   return {
     content: [
       {
         type: "text",
-        text: `PSD and JPEG have now been saved. Use only the attached final JPEG for visual identification, then call raw_photo_processor_finalize_metadata.\nJob: ${job.id}\nJPEG: ${entry.jpeg}\nSource GPS: ${gps}\nSource Description: ${entry.sourceDescription ?? "none"}\nCreator: ${entry.creator ?? "none"}\nPerform a fresh per-photo lookup. Do not identify individual people or put coordinates in Description.`,
+        text: metadataPromptText(job, entry),
       },
       { type: "file", uri: pathToFileURL(entry.jpeg).href, mime: "image/jpeg", name: path.basename(entry.jpeg) },
     ],
@@ -622,6 +626,15 @@ export default definePlugin({
           await context.progress({ status: `Processing selected exposure ${path.basename(entry.raw)} (${selectedIndex + 1}/${job.entries.length})` })
           await applyEdit(pluginDirectory, entry, input.edit, job.overwrite, context.signal)
           job.pending = { group, selectedIndex }
+          // Code Mode can reduce rich tool output to a pathname. Queue the finished
+          // JPEG as a real session attachment so the next model turn receives image
+          // pixels and the workflow resumes automatically after this tool call.
+          await ctx.session.prompt({
+            sessionID: context.sessionID,
+            delivery: "queue",
+            text: metadataPromptText(job, entry),
+            files: [{ uri: pathToFileURL(entry.jpeg).href }],
+          })
           return metadataResult(job, entry)
         },
       })
