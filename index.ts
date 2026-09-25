@@ -11,6 +11,17 @@ const RAW_EXTENSIONS = new Set([
   ".srw", ".x3f",
 ])
 
+const IPTC_SCENES = {
+  "010100": "headshot", "010200": "half-length", "010300": "full-length", "010400": "profile",
+  "010500": "rear view", "010600": "single", "010700": "couple", "010800": "two",
+  "010900": "group", "011000": "general view", "011100": "panoramic view", "011200": "aerial view",
+  "011300": "under-water", "011400": "night scene", "011500": "satellite", "011600": "exterior view",
+  "011700": "interior view", "011800": "close-up", "011900": "action", "012000": "performing",
+  "012100": "posing", "012200": "symbolic", "012300": "off-beat", "012400": "movie scene",
+} as const
+const IPTC_SCENE_CODES = new Set<string>(Object.keys(IPTC_SCENES))
+const IPTC_SCENE_CATALOG = Object.entries(IPTC_SCENES).map(([code, name]) => `${code} ${name}`).join("; ")
+
 const number = (minimum: number, maximum: number, description: string) => ({
   type: "number",
   minimum,
@@ -79,8 +90,8 @@ const EDIT_SCHEMA = {
       type: "array",
       maxItems: 20,
       uniqueItems: true,
-      items: { type: "string", pattern: "^[0-9]{6}$" },
-      description: "Official six-digit IPTC Scene-NewsCodes applicable to this photo. Verify against the IPTC controlled vocabulary; omit or use an empty array when uncertain.",
+      items: { type: "string", enum: Object.keys(IPTC_SCENES) },
+      description: "Applicable official IPTC Scene-NewsCodes from the supplied local catalog. Omit or use an empty array when uncertain.",
     },
     inferredLocation: {
       type: "object",
@@ -187,6 +198,7 @@ type JobEntry = {
 
 type Job = {
   id: string
+  sessionID: string
   folder: string
   work: string
   entries: JobEntry[]
@@ -200,6 +212,7 @@ type Job = {
   pending?: { group: { type: "single" | "bracket"; indices: number[] }; selectedIndex: number }
   photoStartedAt: number
   tokenBaseline: TokenTotals
+  photosSinceCompaction: number
 }
 
 type TokenTotals = {
@@ -227,6 +240,7 @@ function formatDuration(milliseconds: number) {
 }
 
 const jobs = new Map<string, Job>()
+const sessionJobs = new Map<string, string>()
 
 // @opencode/plugin's Plugin.define is an identity helper. Keeping that tiny
 // helper local lets this project plugin load without a separate package install.
@@ -317,14 +331,11 @@ async function runPhotoshop(pluginDirectory: string, script: string, config: unk
   })
 }
 
-async function makePreview(pluginDirectory: string, entry: JobEntry, signal: AbortSignal) {
-  await runPhotoshop(pluginDirectory, "preview.jsx", { input: entry.raw, output: entry.preview }, signal)
-  await stat(entry.preview)
-}
-
-async function makeIdentificationPreview(pluginDirectory: string, entry: JobEntry, signal: AbortSignal) {
-  await runPhotoshop(pluginDirectory, "preview.jsx", { input: entry.jpeg, output: entry.identificationPreview }, signal)
-  await stat(entry.identificationPreview)
+async function makePreviews(pluginDirectory: string, entries: JobEntry[], signal: AbortSignal) {
+  await runPhotoshop(pluginDirectory, "preview.jsx", {
+    items: entries.map((entry) => ({ input: entry.raw, output: entry.preview })),
+  }, signal)
+  await Promise.all(entries.map((entry) => stat(entry.preview)))
 }
 
 function currentPromptText(job: Job, message: string) {
@@ -438,9 +449,7 @@ async function prepareCurrent(pluginDirectory: string, job: Job, signal: AbortSi
       return typeof bias === "number" && !isZeroBias(bias)
     })
   job.group = { type: bracket ? "bracket" : "single", indices: bracket ? lookahead : [job.index] }
-  for (const index of job.group.indices) {
-    await makePreview(pluginDirectory, job.entries[index], signal)
-  }
+  await makePreviews(pluginDirectory, job.group.indices.map((index) => job.entries[index]), signal)
 }
 
 async function findSidecar(raw: string) {
@@ -471,7 +480,9 @@ async function applyEdit(pluginDirectory: string, entry: JobEntry, edit: Edit, o
       cropCenterX: clamp(edit.cropCenterX, 0.5, 0, 1),
       cropCenterY: clamp(edit.cropCenterY, 0.5, 0, 1),
       cropScale: clamp(edit.cropScale, 0.96, 0.5, 1),
+      identificationPreview: entry.identificationPreview,
     }, signal)
+    await stat(entry.identificationPreview)
   } finally {
     if (previous) await writeFile(sidecar, previous)
     else await rm(sidecar, { force: true })
@@ -490,7 +501,7 @@ async function updateOutputMetadata(pluginDirectory: string, entry: JobEntry, ed
     jpeg: entry.jpeg,
     description: hasLocation && typeof edit.description === "string" ? edit.description.trim() : null,
     keywords: [...new Set((edit.keywords ?? []).map((keyword) => keyword.trim()).filter(Boolean))].slice(0, 30),
-    iptcSceneCodes: [...new Set((edit.iptcSceneCodes ?? []).filter((code) => /^[0-9]{6}$/.test(code)))].slice(0, 20),
+    iptcSceneCodes: [...new Set((edit.iptcSceneCodes ?? []).filter((code) => IPTC_SCENE_CODES.has(code)))].slice(0, 20),
     gps: inferred ? { latitude: inferred.latitude, longitude: inferred.longitude } : null,
     location: hasLocation && edit.location ? {
       sublocation: edit.location.sublocation?.trim() || null,
@@ -507,7 +518,7 @@ function metadataPromptText(job: Job, entry: JobEntry) {
   const gps = entry.gps
     ? `${entry.gps.latitude.toFixed(6)}, ${entry.gps.longitude.toFixed(6)}`
     : "none"
-  return `An attachment-safe JPEG rendered directly from the finished full-resolution JPEG is attached as image content. It preserves the finished composition and is scaled only for visual identification. Use this attached image—not a pathname—for identification, then call raw_photo_processor_finalize_metadata. Metadata will be written to the original full-resolution PSD and quality-12 JPEG.\nJob: ${job.id}\nSource GPS: ${gps}\nSource Description: ${entry.sourceDescription ?? "none"}\nCreator: ${entry.creator ?? "none"}\nPerform a fresh per-photo lookup. You must explicitly set locationDecision. If you identify or name any landmark, city, region, country, venue, park, building, or other place in your reasoning, Description, or Keywords, locationDecision must be verified and you must provide complete structured location metadata (plus inferredLocation when source GPS and source Description are absent). Use unverified only when emitting no place names. Do not identify individual people or put coordinates in Description.`
+  return `Identify this attached finished-JPEG preview, then call raw_photo_processor_finalize_metadata for job ${job.id}. Metadata targets the full-resolution PSD/JPEG. Source GPS: ${gps}. Source Description: ${entry.sourceDescription ?? "none"}. Creator: ${entry.creator ?? "none"}. Research this photo independently. Any named place requires locationDecision=verified and complete location fields; without source GPS/Description, also provide >90% inferredLocation. Otherwise use unverified and emit no place names. Never identify people or put coordinates in Description. Select applicable Scene codes only from this official local catalog: ${IPTC_SCENE_CATALOG}`
 }
 
 function metadataResult(job: Job, entry: JobEntry) {
@@ -539,6 +550,15 @@ export default definePlugin({
     const requested = configuredModel.split("/")
     const requestedProvider = requested.shift() ?? ""
     const requestedModel = requested.join("/")
+    const configuredCompactionInterval = Number(process.env.RAW_PHOTO_PROCESSOR_COMPACT_EVERY ?? ctx.options.compactEvery ?? 8)
+    const compactionInterval = Number.isFinite(configuredCompactionInterval)
+      ? Math.min(50, Math.max(2, Math.round(configuredCompactionInterval)))
+      : 8
+    const configuredCompactionPressure = Number(process.env.RAW_PHOTO_PROCESSOR_COMPACT_AT ?? ctx.options.compactAt ?? 0.65)
+    const compactionPressure = Number.isFinite(configuredCompactionPressure)
+      ? Math.min(0.9, Math.max(0.4, configuredCompactionPressure))
+      : 0.65
+    const contextLimits = new Map<string, number>()
 
     const readSessionTokens = async (sessionID: string): Promise<TokenTotals> => {
       const session: any = await ctx.session.get({ sessionID })
@@ -549,6 +569,29 @@ export default definePlugin({
         reasoning: Number(tokens?.reasoning) || 0,
         cacheRead: Number(tokens?.cache?.read) || 0,
         cacheWrite: Number(tokens?.cache?.write) || 0,
+      }
+    }
+
+    const readContextPressure = async (sessionID: string) => {
+      try {
+        const session: any = await ctx.session.get({ sessionID })
+        const model = session?.model
+        if (!model?.providerID || !model?.id) return undefined
+        const modelKey = `${model.providerID}/${model.id}`
+        let contextLimit = contextLimits.get(modelKey)
+        if (!contextLimit) {
+          const models: any[] = await ctx.model.list()
+          contextLimit = Number(models.find((item) => item.providerID === model.providerID && item.id === model.id)?.limit?.context) || undefined
+          if (contextLimit) contextLimits.set(modelKey, contextLimit)
+        }
+        if (!contextLimit) return undefined
+        const messages: any[] = await ctx.session.context({ sessionID })
+        const latest = [...messages].reverse().find((message) => message?.type === "assistant" && message.tokens)?.tokens
+        if (!latest) return undefined
+        const activeTokens = (Number(latest.input) || 0) + (Number(latest.cache?.read) || 0) + (Number(latest.cache?.write) || 0)
+        return activeTokens / contextLimit
+      } catch {
+        return undefined
       }
     }
 
@@ -574,6 +617,17 @@ export default definePlugin({
       })
     }
 
+    await ctx.session.hook("context", (event) => {
+      const jobID = sessionJobs.get(event.sessionID)
+      const job = jobID ? jobs.get(jobID) : undefined
+      const allowed = new Set(job
+        ? [job.pending ? "raw_photo_processor_finalize_metadata" : "raw_photo_processor_apply", "raw_photo_processor_cancel"]
+        : ["raw_photo_processor_start"])
+      for (const name of Object.keys(event.tools)) {
+        if (name.startsWith("raw_photo_processor_") && !allowed.has(name)) delete event.tools[name]
+      }
+    })
+
     await ctx.command.transform((editor) => {
       editor.add({
         name: "raw-photo-processor",
@@ -589,7 +643,7 @@ export default definePlugin({
           await ctx.session.prompt({
             sessionID,
             delivery,
-            text: `Run the RAW photo workflow for exactly this folder: ${JSON.stringify(folder)}. Call raw_photo_processor_start once. Image-producing tools use queued session attachments because Code Mode cannot expose image pixels in their immediate return value. Whenever start, apply, or finalize_metadata says image attachments were queued, immediately end that turn and wait for the next queued user message; do not call any other RAW processor tool, restart, or cancel while waiting. First use queued previews to choose bracket exposure and adjustments, call apply, then wait for the queued finished-JPEG attachment. Use only that finished image for identification and call finalize_metadata. Every photo requires locationDecision. If you identify or name any landmark, city, region, country, venue, park, building, or other place anywhere in your reasoning, Description, or Keywords, set locationDecision to verified and provide complete structured location metadata; with no source GPS or source Description, also provide inferredLocation with greater than 90% confidence and verified coordinates. A famous, visually unmistakable landmark above 90% confidence counts as verified even without source GPS. Use unverified only when no exact place is established and emit no place names in Description or Keywords. When applicable, look up and provide only verified official six-digit IPTC Scene-NewsCodes; leave iptcSceneCodes empty when uncertain. Never put coordinates in Description, copy metadata, identify individual people, or cancel unless the user explicitly asks. Repeat until completion.`,
+            text: `Process exactly ${JSON.stringify(folder)}. Call raw_photo_processor_start once. For every queued image message, inspect its attachments, call the one available RAW workflow tool, then end the turn whenever more attachments are queued. Preview stage: choose the best bracket frame and realistic adjustments. Finished-JPEG stage: identify/research that photo and finalize unique metadata. Never restart, copy another photo's metadata, identify people, or cancel unless explicitly asked. Continue until complete.`,
           })
         },
       })
@@ -615,6 +669,8 @@ export default definePlugin({
           required: ["folder"],
         },
         execute: async (input: any, context) => {
+          const activeJobID = sessionJobs.get(context.sessionID)
+          if (activeJobID && jobs.has(activeJobID)) throw new Error("This session already has an active RAW processing job.")
           const folder = path.resolve(input.folder)
           const info = await stat(folder)
           if (!info.isDirectory()) throw new Error(`Not a folder: ${folder}`)
@@ -650,6 +706,7 @@ export default definePlugin({
           const tokenBaseline = await readSessionTokens(context.sessionID)
           const job: Job = {
             id,
+            sessionID: context.sessionID,
             folder,
             work,
             entries,
@@ -661,12 +718,15 @@ export default definePlugin({
             keywordSets: new Set(),
             photoStartedAt: Date.now(),
             tokenBaseline,
+            photosSinceCompaction: 0,
           }
           jobs.set(id, job)
+          sessionJobs.set(context.sessionID, id)
           try {
             await nextUnprocessed(job)
             if (job.index >= job.entries.length) {
               jobs.delete(id)
+              if (sessionJobs.get(context.sessionID) === id) sessionJobs.delete(context.sessionID)
               await rm(work, { recursive: true, force: true })
               return { content: `Nothing to process. ${job.skipped.length} image(s) skipped because outputs already exist.` }
             }
@@ -677,6 +737,7 @@ export default definePlugin({
             return currentResult(job, message)
           } catch (error) {
             jobs.delete(id)
+            if (sessionJobs.get(context.sessionID) === id) sessionJobs.delete(context.sessionID)
             await rm(work, { recursive: true, force: true })
             throw error
           }
@@ -700,6 +761,7 @@ export default definePlugin({
         execute: async (input: { jobID: string; selectedOffset?: number; edit: Edit }, context) => {
           const job = jobs.get(input.jobID)
           if (!job) throw new Error("Unknown or completed RAW processing job.")
+          if (job.sessionID !== context.sessionID) throw new Error("This RAW processing job belongs to another session.")
           if (job.pending) throw new Error("Finalize metadata for the already-saved JPEG before processing another image.")
           const group = job.group ?? { type: "single" as const, indices: [job.index] }
           const selectedOffset = group.type === "bracket" ? input.selectedOffset : 0
@@ -710,8 +772,6 @@ export default definePlugin({
           const entry = job.entries[selectedIndex]
           await context.progress({ status: `Processing selected exposure ${path.basename(entry.raw)} (${selectedIndex + 1}/${job.entries.length})` })
           await applyEdit(pluginDirectory, entry, input.edit, job.overwrite, context.signal)
-          await context.progress({ status: `Creating attachment-safe identification JPEG for ${path.basename(entry.jpeg)}` })
-          await makeIdentificationPreview(pluginDirectory, entry, context.signal)
           job.pending = { group, selectedIndex }
           // Code Mode can reduce rich tool output to a pathname. Queue the finished
           // JPEG as a real session attachment so the next model turn receives image
@@ -742,6 +802,7 @@ export default definePlugin({
         execute: async (input: { jobID: string; metadata: Edit }, context) => {
           const job = jobs.get(input.jobID)
           if (!job) throw new Error("Unknown or completed RAW processing job.")
+          if (job.sessionID !== context.sessionID) throw new Error("This RAW processing job belongs to another session.")
           if (!job.pending) throw new Error("Process and save an image before finalizing its metadata.")
           const { group, selectedIndex } = job.pending
           const entry = job.entries[selectedIndex]
@@ -799,8 +860,8 @@ export default definePlugin({
           if (edit.description && descriptionContainsCoordinates(edit.description)) {
             throw new Error("Description must not contain GPS coordinates, latitude/longitude labels, or coordinate notation.")
           }
-          if ((edit.iptcSceneCodes ?? []).some((code) => !/^[0-9]{6}$/.test(code))) {
-            throw new Error("Every IPTC Scene Code must be an official six-digit numeric Scene-NewsCode.")
+          if ((edit.iptcSceneCodes ?? []).some((code) => !IPTC_SCENE_CODES.has(code))) {
+            throw new Error("Every IPTC Scene Code must come from the official local Scene-NewsCodes catalog.")
           }
           const descriptionFingerprint = edit.description?.trim() ? normalizeMetadataText(edit.description) : undefined
           const keywordsFingerprint = keywordFingerprint(keywords)
@@ -827,12 +888,23 @@ export default definePlugin({
           const currentTokens = await readSessionTokens(context.sessionID)
           const used = tokenDelta(currentTokens, job.tokenBaseline)
           const billableTotal = used.input + used.output + used.reasoning
-          const compactionStatus = await requestCompaction(context.sessionID)
-          const performance = `Photo report — time: ${formatDuration(elapsed)}; recorded tokens: ${billableTotal.toLocaleString()} total (${used.input.toLocaleString()} input, ${used.output.toLocaleString()} output, ${used.reasoning.toLocaleString()} reasoning; cache ${used.cacheRead.toLocaleString()} read/${used.cacheWrite.toLocaleString()} write). ${compactionStatus}`
           job.tokenBaseline = currentTokens
+          job.photosSinceCompaction += 1
           await nextUnprocessed(job)
-          if (job.index >= job.entries.length) {
+          const finished = job.index >= job.entries.length
+          const contextPressure = finished ? undefined : await readContextPressure(context.sessionID)
+          let compactionStatus = "Context compaction not needed; batch complete."
+          if (!finished && (job.photosSinceCompaction >= compactionInterval || (contextPressure ?? 0) >= compactionPressure)) {
+            compactionStatus = await requestCompaction(context.sessionID)
+            if (compactionStatus === "Context compaction requested.") job.photosSinceCompaction = 0
+          } else if (!finished) {
+            const pressure = contextPressure === undefined ? "context pressure unavailable" : `${Math.round(contextPressure * 100)}% context pressure`
+            compactionStatus = `Context compaction deferred (${job.photosSinceCompaction}/${compactionInterval} photos; ${pressure}).`
+          }
+          const performance = `Photo report — time: ${formatDuration(elapsed)}; recorded tokens: ${billableTotal.toLocaleString()} total (${used.input.toLocaleString()} input, ${used.output.toLocaleString()} output, ${used.reasoning.toLocaleString()} reasoning; cache ${used.cacheRead.toLocaleString()} read/${used.cacheWrite.toLocaleString()} write). ${compactionStatus}`
+          if (finished) {
             jobs.delete(job.id)
+            if (sessionJobs.get(context.sessionID) === job.id) sessionJobs.delete(context.sessionID)
             await rm(job.work, { recursive: true, force: true })
             return {
               content: `${performance}\nRAW processing complete. Created ${job.completed.length} PSD/JPEG pair(s); skipped ${job.skipped.length}.\nPSD files: ${path.join(job.folder, "PSDs")}\nJPEG files: ${path.join(job.folder, "JPEGs")}`,
@@ -857,10 +929,12 @@ export default definePlugin({
           properties: { jobID: { type: "string" } },
           required: ["jobID"],
         },
-        execute: async (input: { jobID: string }) => {
+        execute: async (input: { jobID: string }, context) => {
           const job = jobs.get(input.jobID)
           if (!job) return { content: "Job is already completed, cancelled, or unknown." }
+          if (job.sessionID !== context.sessionID) throw new Error("This RAW processing job belongs to another session.")
           jobs.delete(input.jobID)
+          if (sessionJobs.get(job.sessionID) === input.jobID) sessionJobs.delete(job.sessionID)
           await rm(job.work, { recursive: true, force: true })
           return { content: `Cancelled job ${input.jobID}. Completed output files were retained.` }
         },
@@ -870,6 +944,7 @@ export default definePlugin({
     return async () => {
       await Promise.all([...jobs.values()].map((job) => rm(job.work, { recursive: true, force: true })))
       jobs.clear()
+      sessionJobs.clear()
     }
   },
 })

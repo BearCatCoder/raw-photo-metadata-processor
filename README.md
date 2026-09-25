@@ -39,7 +39,11 @@ When source metadata contains a Creator, the plugin preserves any existing Copyr
 
 Rights Usage Terms use the actual Creator name (for example, `All rights reserved. Bryan Smith retains all rights.`), never the generic phrase “The Creator.” When a matching official value can be verified, the model may also supply one or more six-digit IPTC Scene-NewsCodes; uncertain codes are omitted.
 
-After each finalized photo, the plugin reports elapsed processing time and the OpenCode-recorded token delta (input, output, reasoning, and cache read/write). It also requests session compaction before queuing the next photo. Compaction replaces older conversation with a summary rather than deleting the active job instructions or plugin state, making long batches safer than hard-clearing context.
+After each finalized photo, the plugin reports elapsed processing time and the OpenCode-recorded token delta (input, output, reasoning, and cache read/write). To avoid spending tokens on a summary after every image, it requests session compaction when the active context reaches 65% of the selected model's limit or after eight photos, whichever comes first. Set `RAW_PHOTO_PROCESSOR_COMPACT_AT`/plugin option `compactAt` from 0.4–0.9 and `RAW_PHOTO_PROCESSOR_COMPACT_EVERY`/`compactEvery` from 2–50 to tune those thresholds. Compaction replaces older conversation with a summary rather than deleting active plugin state.
+
+The model receives only the RAW workflow tool needed for the current stage: Start with no active job, Apply while reviewing previews, or Finalize Metadata after the finished JPEG. Cancel remains available during an active job. Five-shot preview sets are rendered in one Photoshop bridge call, and the attachment-safe identification JPEG is produced in the same bridge call as the PSD/JPEG save. This reduces a normal photo from five Photoshop launches to four and a bracket set from nine launches to four.
+
+The complete official IPTC Scene-NewsCodes vocabulary is bundled locally, so selecting Scene codes does not require a web lookup. Location research remains photo-specific.
 
 Every processed photo is independently analyzed and, when a location is available or confidently inferred, independently researched. Descriptions and complete keyword sets must be photo-specific. The plugin rejects an exactly reused Description or identical complete keyword set within the same batch, while allowing individual relevant terms such as a shared city or `landscape` to overlap.
 

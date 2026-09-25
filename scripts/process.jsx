@@ -80,6 +80,28 @@
         jpegOptions.embedColorProfile = true;
         jpegOptions.formatOptions = FormatOptions.STANDARDBASELINE;
         doc.saveAs(new File(RPP_CONFIG.jpeg), jpegOptions, true, Extension.LOWERCASE);
+
+        // Reopen the saved full-resolution JPEG in this same Photoshop bridge
+        // call so identification uses the finished JPEG without another launch.
+        doc.close(SaveOptions.DONOTSAVECHANGES);
+        doc = app.open(new File(RPP_CONFIG.jpeg));
+        var previewWidth = px(doc.width);
+        var previewHeight = px(doc.height);
+        var previewLongest = Math.max(previewWidth, previewHeight);
+        if (previewLongest > 1600) {
+            var previewFactor = 1600 / previewLongest;
+            doc.resizeImage(
+                UnitValue(Math.round(previewWidth * previewFactor), "px"),
+                UnitValue(Math.round(previewHeight * previewFactor), "px"),
+                null,
+                ResampleMethod.BICUBICSHARPER
+            );
+        }
+        var previewOptions = new JPEGSaveOptions();
+        previewOptions.quality = 10;
+        previewOptions.embedColorProfile = true;
+        previewOptions.formatOptions = FormatOptions.STANDARDBASELINE;
+        doc.saveAs(new File(RPP_CONFIG.identificationPreview), previewOptions, true, Extension.LOWERCASE);
     } finally {
         if (doc) doc.close(SaveOptions.DONOTSAVECHANGES);
         app.displayDialogs = originalDialogs;
