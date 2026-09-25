@@ -37,13 +37,13 @@ For each asset, the plugin:
 7. Searches the complete locally bundled IPTC Subject NewsCodes vocabulary and assigns every applicable active eight-digit Subject Code. The local catalog contains all 1,404 entries, including 17 retired entries retained for completeness but blocked from assignment.
 8. Preserves Creator and an existing copyright notice. When Creator exists but the notice is blank, it adds `Copyright (c) <Creator>. All rights reserved.`, marks the work copyrighted, and writes creator-specific XMP Usage Terms.
 
-Descriptions and complete keyword sets must be unique within a batch. Relevant individual keywords may overlap.
+Every photo is identified independently. Descriptions and keywords may repeat when the independently observed content genuinely supports the same wording or terms.
 
 ## File writing behavior
 
 - **PSD and JPEG:** XMP is updated in place through Adobe XMP; image pixels are not decoded and re-saved.
 - **DNG and supported RAW containers:** metadata is embedded when Adobe's installed XMP handler permits safe updates.
-- **Proprietary RAW:** when embedding is unsupported, Adobe-compatible `<basename>.xmp` sidecars are written or updated while preserving the packet's other XMP properties.
+- **Proprietary RAW:** when embedding is unsupported, Adobe-compatible `<basename>.xmp` sidecars are written. If a sidecar already exists, its values and Camera Raw settings are preserved: absent scalar fields are filled and missing keywords, Scene codes, and Subject codes are merged into their existing arrays.
 
 Existing metadata outside the fields managed by this plugin is preserved. Source GPS is retained; verified inferred GPS is added only when source GPS is absent.
 

@@ -26,38 +26,83 @@
         try { return propertyText(xmp.getArrayItem(namespace, name, 1)); } catch (_) { return ""; }
     }
 
-    function applyMetadata(xmp) {
-        if (typeof RPP_CONFIG.description === "string" && RPP_CONFIG.description.length) {
+    function hasProperty(xmp, namespace, name) {
+        try { return xmp.doesPropertyExist(namespace, name); } catch (_) { return false; }
+    }
+
+    function hasTextProperty(xmp, namespace, name) {
+        try { return propertyText(xmp.getProperty(namespace, name)).length > 0; } catch (_) { return false; }
+    }
+
+    function hasLocalizedText(xmp, namespace, name) {
+        try { return propertyText(xmp.getLocalizedText(namespace, name, "", "x-default")).length > 0; } catch (_) { return false; }
+    }
+
+    function appendMissingArrayItems(xmp, namespace, name, values) {
+        var existing = {};
+        var count = 0;
+        try { count = xmp.countArrayItems(namespace, name); } catch (_) {}
+        for (var existingIndex = 1; existingIndex <= count; existingIndex += 1) {
+            var existingValue = firstArrayItemAt(xmp, namespace, name, existingIndex);
+            if (existingValue) existing[existingValue.toLowerCase()] = true;
+        }
+        for (var valueIndex = 0; valueIndex < values.length; valueIndex += 1) {
+            var value = propertyText(values[valueIndex]);
+            if (value && !existing[value.toLowerCase()]) {
+                xmp.appendArrayItem(namespace, name, value, 0, XMPConst.ARRAY_IS_UNORDERED);
+                existing[value.toLowerCase()] = true;
+            }
+        }
+    }
+
+    function firstArrayItemAt(xmp, namespace, name, index) {
+        try { return propertyText(xmp.getArrayItem(namespace, name, index)); } catch (_) { return ""; }
+    }
+
+    function applyMetadata(xmp, fillMissing) {
+        if (typeof RPP_CONFIG.description === "string" && RPP_CONFIG.description.length && (!fillMissing || !hasLocalizedText(xmp, NS_DC, "description"))) {
             xmp.setLocalizedText(NS_DC, "description", "", "x-default", RPP_CONFIG.description);
         }
         if (RPP_CONFIG.keywords && RPP_CONFIG.keywords.length) {
-            xmp.deleteProperty(NS_DC, "subject");
-            for (var keywordIndex = 0; keywordIndex < RPP_CONFIG.keywords.length; keywordIndex += 1) {
-                xmp.appendArrayItem(NS_DC, "subject", RPP_CONFIG.keywords[keywordIndex], 0, XMPConst.ARRAY_IS_UNORDERED);
+            if (fillMissing) {
+                appendMissingArrayItems(xmp, NS_DC, "subject", RPP_CONFIG.keywords);
+            } else {
+                xmp.deleteProperty(NS_DC, "subject");
+                for (var keywordIndex = 0; keywordIndex < RPP_CONFIG.keywords.length; keywordIndex += 1) {
+                    xmp.appendArrayItem(NS_DC, "subject", RPP_CONFIG.keywords[keywordIndex], 0, XMPConst.ARRAY_IS_UNORDERED);
+                }
             }
         }
         if (RPP_CONFIG.gps) {
-            xmp.setProperty(NS_EXIF, "GPSLatitude", gpsValue(RPP_CONFIG.gps.latitude, "N", "S"));
-            xmp.setProperty(NS_EXIF, "GPSLongitude", gpsValue(RPP_CONFIG.gps.longitude, "E", "W"));
-            xmp.setProperty(NS_EXIF, "GPSMapDatum", "WGS-84");
+            if (!fillMissing || !hasTextProperty(xmp, NS_EXIF, "GPSLatitude")) xmp.setProperty(NS_EXIF, "GPSLatitude", gpsValue(RPP_CONFIG.gps.latitude, "N", "S"));
+            if (!fillMissing || !hasTextProperty(xmp, NS_EXIF, "GPSLongitude")) xmp.setProperty(NS_EXIF, "GPSLongitude", gpsValue(RPP_CONFIG.gps.longitude, "E", "W"));
+            if (!fillMissing || !hasTextProperty(xmp, NS_EXIF, "GPSMapDatum")) xmp.setProperty(NS_EXIF, "GPSMapDatum", "WGS-84");
         }
         if (RPP_CONFIG.location) {
-            xmp.setProperty(NS_PHOTOSHOP, "City", RPP_CONFIG.location.city);
-            xmp.setProperty(NS_PHOTOSHOP, "State", RPP_CONFIG.location.stateProvince);
-            xmp.setProperty(NS_PHOTOSHOP, "Country", RPP_CONFIG.location.country);
-            xmp.setProperty(NS_IPTC, "CountryCode", RPP_CONFIG.location.isoCountryCode);
-            if (RPP_CONFIG.location.sublocation) xmp.setProperty(NS_IPTC, "Location", RPP_CONFIG.location.sublocation);
+            if (!fillMissing || !hasTextProperty(xmp, NS_PHOTOSHOP, "City")) xmp.setProperty(NS_PHOTOSHOP, "City", RPP_CONFIG.location.city);
+            if (!fillMissing || !hasTextProperty(xmp, NS_PHOTOSHOP, "State")) xmp.setProperty(NS_PHOTOSHOP, "State", RPP_CONFIG.location.stateProvince);
+            if (!fillMissing || !hasTextProperty(xmp, NS_PHOTOSHOP, "Country")) xmp.setProperty(NS_PHOTOSHOP, "Country", RPP_CONFIG.location.country);
+            if (!fillMissing || !hasTextProperty(xmp, NS_IPTC, "CountryCode")) xmp.setProperty(NS_IPTC, "CountryCode", RPP_CONFIG.location.isoCountryCode);
+            if (RPP_CONFIG.location.sublocation && (!fillMissing || !hasTextProperty(xmp, NS_IPTC, "Location"))) xmp.setProperty(NS_IPTC, "Location", RPP_CONFIG.location.sublocation);
         }
         if (RPP_CONFIG.iptcSceneCodes) {
-            xmp.deleteProperty(NS_IPTC, "Scene");
-            for (var sceneIndex = 0; sceneIndex < RPP_CONFIG.iptcSceneCodes.length; sceneIndex += 1) {
-                xmp.appendArrayItem(NS_IPTC, "Scene", RPP_CONFIG.iptcSceneCodes[sceneIndex], 0, XMPConst.ARRAY_IS_UNORDERED);
+            if (fillMissing) {
+                appendMissingArrayItems(xmp, NS_IPTC, "Scene", RPP_CONFIG.iptcSceneCodes);
+            } else {
+                xmp.deleteProperty(NS_IPTC, "Scene");
+                for (var sceneIndex = 0; sceneIndex < RPP_CONFIG.iptcSceneCodes.length; sceneIndex += 1) {
+                    xmp.appendArrayItem(NS_IPTC, "Scene", RPP_CONFIG.iptcSceneCodes[sceneIndex], 0, XMPConst.ARRAY_IS_UNORDERED);
+                }
             }
         }
         if (RPP_CONFIG.iptcSubjectCodes) {
-            xmp.deleteProperty(NS_IPTC, "SubjectCode");
-            for (var subjectIndex = 0; subjectIndex < RPP_CONFIG.iptcSubjectCodes.length; subjectIndex += 1) {
-                xmp.appendArrayItem(NS_IPTC, "SubjectCode", RPP_CONFIG.iptcSubjectCodes[subjectIndex], 0, XMPConst.ARRAY_IS_UNORDERED);
+            if (fillMissing) {
+                appendMissingArrayItems(xmp, NS_IPTC, "SubjectCode", RPP_CONFIG.iptcSubjectCodes);
+            } else {
+                xmp.deleteProperty(NS_IPTC, "SubjectCode");
+                for (var subjectIndex = 0; subjectIndex < RPP_CONFIG.iptcSubjectCodes.length; subjectIndex += 1) {
+                    xmp.appendArrayItem(NS_IPTC, "SubjectCode", RPP_CONFIG.iptcSubjectCodes[subjectIndex], 0, XMPConst.ARRAY_IS_UNORDERED);
+                }
             }
         }
 
@@ -69,10 +114,10 @@
                 try { notice = propertyText(xmp.getProperty(NS_PHOTOSHOP, "Copyright")); } catch (_) {}
             }
             if (!notice) notice = "Copyright (c) " + creator + ". All rights reserved.";
-            xmp.setProperty(NS_PHOTOSHOP, "Copyright", notice);
-            xmp.setLocalizedText(NS_DC, "rights", "", "x-default", notice);
-            xmp.setProperty(NS_RIGHTS, "Marked", true, XMPConst.BOOLEAN);
-            xmp.setLocalizedText(NS_RIGHTS, "UsageTerms", "", "x-default", "All rights reserved. " + creator + " retains all rights.");
+            if (!fillMissing || !hasTextProperty(xmp, NS_PHOTOSHOP, "Copyright")) xmp.setProperty(NS_PHOTOSHOP, "Copyright", notice);
+            if (!fillMissing || !hasLocalizedText(xmp, NS_DC, "rights")) xmp.setLocalizedText(NS_DC, "rights", "", "x-default", notice);
+            if (!fillMissing || !hasProperty(xmp, NS_RIGHTS, "Marked")) xmp.setProperty(NS_RIGHTS, "Marked", true, XMPConst.BOOLEAN);
+            if (!fillMissing || !hasLocalizedText(xmp, NS_RIGHTS, "UsageTerms")) xmp.setLocalizedText(NS_RIGHTS, "UsageTerms", "", "x-default", "All rights reserved. " + creator + " retains all rights.");
         }
     }
 
@@ -100,6 +145,7 @@
             var sidecar = new File(item.sidecar);
             var extension = source.name.toLowerCase().replace(/^.*\./, "");
             var raw = /^(3fr|arw|cr2|cr3|dng|erf|iiq|kdc|mos|mrw|nef|nrw|orf|pef|raf|raw|rw2|rwl|srw|x3f)$/.test(extension);
+            var fillMissing = raw && sidecar.exists;
             var xmpFile = null;
             var xmp = null;
             var direct = false;
@@ -107,7 +153,7 @@
                 xmpFile = new XMPFile(source.fsName, XMPConst.UNKNOWN, XMPConst.OPEN_FOR_UPDATE);
                 xmp = xmpFile.getXMP();
                 if (!xmp) xmp = new XMPMeta();
-                applyMetadata(xmp);
+                applyMetadata(xmp, fillMissing);
                 if (xmpFile.canPutXMP(xmp)) {
                     xmpFile.putXMP(xmp);
                     xmpFile.closeFile(XMPConst.CLOSE_UPDATE_SAFELY);
@@ -133,7 +179,7 @@
                     try { xmp = new XMPMeta(sidecarText); } catch (_) {}
                 }
                 if (!xmp) xmp = new XMPMeta();
-                applyMetadata(xmp);
+                applyMetadata(xmp, fillMissing);
                 writeSidecar(sidecar, xmp);
             }
             var mode = (!direct || (raw && sidecar.exists)) ? "sidecar" : "embedded";

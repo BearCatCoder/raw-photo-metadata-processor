@@ -149,8 +149,6 @@ type Job = {
   assets: Asset[]
   index: number
   completed: Array<{ stem: string; files: string[]; storage: string[] }>
-  descriptions: Set<string>
-  keywordSets: Set<string>
 }
 
 const jobs = new Map<string, Job>()
@@ -159,10 +157,6 @@ const definePlugin = <T>(plugin: T) => plugin
 
 function normalizeMetadataText(value: string) {
   return value.trim().toLocaleLowerCase().replace(/\s+/g, " ")
-}
-
-function keywordFingerprint(keywords: string[]) {
-  return [...new Set(keywords.map(normalizeMetadataText).filter(Boolean))].sort().join("\u001f")
 }
 
 function descriptionContainsCoordinates(value: string) {
@@ -328,15 +322,7 @@ function validateMetadata(job: Job, asset: Asset, metadata: Metadata, activeSubj
   if ((metadata.iptcSubjectCodes ?? []).some((code) => !activeSubjectCodes.has(code))) {
     throw new Error("Every IPTC Subject Code must be an active code from the bundled local catalog.")
   }
-  const descriptionFingerprint = metadata.description?.trim() ? normalizeMetadataText(metadata.description) : undefined
-  const keywordsFingerprint = keywordFingerprint(keywords)
-  if (descriptionFingerprint && job.descriptions.has(descriptionFingerprint)) {
-    throw new Error("Description duplicates an earlier asset. Provide a unique, image-specific Description.")
-  }
-  if (job.keywordSets.has(keywordsFingerprint)) {
-    throw new Error("The complete keyword set duplicates an earlier asset. Make it image-specific.")
-  }
-  return { keywords, inferred, location, descriptionFingerprint, keywordsFingerprint }
+  return { keywords, inferred, location }
 }
 
 export default definePlugin({
@@ -431,7 +417,7 @@ export default definePlugin({
           }))
           const job: Job = {
             id, sessionID: context.sessionID, folder, work, assets, index: 0,
-            completed: [], descriptions: new Set(), keywordSets: new Set(),
+            completed: [],
           }
           jobs.set(id, job)
           sessionJobs.set(context.sessionID, id)
@@ -534,8 +520,6 @@ export default definePlugin({
           }, context.signal)
           const storage = (await readFile(resultFile, "utf8")).split(/\r?\n/).filter(Boolean)
           await rm(resultFile, { force: true })
-          if (validated.descriptionFingerprint) job.descriptions.add(validated.descriptionFingerprint)
-          job.keywordSets.add(validated.keywordsFingerprint)
           job.completed.push({ stem: asset.stem, files: asset.files, storage })
           job.index += 1
           if (job.index >= job.assets.length) {
