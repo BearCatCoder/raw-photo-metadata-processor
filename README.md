@@ -1,68 +1,61 @@
-# Raw Photo Processor
+# Raw Photo Metadata Processor
 
-An OpenCode V2 plugin for AI-guided, non-recursive processing of one folder of RAW photos with Adobe Camera Raw and Adobe Photoshop on Windows.
+An OpenCode V2 plugin that uses image recognition and Adobe XMP to update **metadata only** for RAW, PSD, and JPEG images on Windows. It is based on [`BearCatCoder/raw-photo-processor`](https://github.com/BearCatCoder/raw-photo-processor), with all pixel editing, Camera Raw adjustment, cropping, and output rendering removed.
 
 ## Use
 
-Restart OpenCode after installation, then run:
+Install this directory as `.opencode/plugins/raw-photo-metadata-processor`, restart OpenCode, then run:
 
 ```text
-/raw-photo-processor C:\absolute\path\to\raws
+/raw-photo-metadata-processor C:\absolute\path\to\images
 ```
 
-The command defaults to `openai/gpt-6-luna` and falls back to `openai/gpt-5.6-terra` if Luna is unavailable. The model examines a temporary JPEG preview of each photo and selects restrained Camera Raw values, straightening, and a 3:2 or 2:3 crop. The plugin then creates:
+The folder is scanned non-recursively. Supported files with the same basename are treated as renditions of one asset (for example, `DSC001.ARW`, `DSC001.psd`, and `DSC001.jpg`). The model analyzes that asset once and writes identical descriptive metadata to every rendition.
 
-After Camera Raw, straightening, and cropping, the still-open Photoshop document receives a required conservative finishing pass before either output is saved. The model supplies residual exposure, brightness, contrast, Levels midtone gamma, and midtone color-balance corrections. Neutral values are used when Camera Raw already achieved the correct result. Limits are intentionally narrow to preserve a natural, photorealistic appearance.
-
-- `<source folder>\PSDs\<name>.psd`
-- `<source folder>\JPEGs\<name>.jpg` (8 Bits/Channel, JPEG quality 12)
-
-Existing outputs are skipped by default. The RAW file is never modified. A temporary `.xmp` sidecar is used to pass settings to Camera Raw; an existing sidecar is restored byte-for-byte after the RAW is opened.
-
-Processing uses a strict two-phase workflow. First, every temporary JPEG preview—including all five images in a bracket set—is queued as an actual image attachment in the active OpenCode session so the model can select exposure and adjustments without relying on pathnames. Photoshop then saves the PSD followed by the maximum-quality JPEG. Second, the plugin queues an attachment-safe rendering of that finished JPEG for visual identification. These session attachments bypass Code Mode's path-only tool serialization. Only after identification does the plugin reopen both saved outputs and write matching metadata to the PSD and JPEG.
-
-Full-resolution quality-12 JPEGs can exceed OpenCode's 20 MB attachment limit. For identification only, the plugin therefore renders a temporary maximum-1600-pixel JPEG directly from the finished output. This attachment-safe copy preserves the final composition and appearance; it does not replace or modify the full-resolution JPEG. Metadata is still applied to the original PSD and quality-12 JPEG.
-
-Queued attachments arrive on the next session turn. The immediate tool result therefore instructs the model to end its current turn and wait; it must not process, restart, or cancel the job before the queued image message arrives. Cancellation is reserved for an explicit user request.
-
-Before processing, the plugin reads the Exposure Bias metadata up to five images ahead. A `0 EV` image followed by four non-zero-EV images is treated as one bracket set. The model compares all five previews, processes only the best exposure, and skips the other four. Non-zero frames encountered shortly before a new `0 EV` image are treated as an incomplete bracket run and skipped.
-
-When GPS coordinates are present, they are shown to the model so it can research the general subject/location and write an objective IPTC Description plus relevant subject and location keywords. The model is explicitly prohibited from identifying individual people.
-
-Without source GPS, a landmark fallback is permitted only when the model can identify a distinctive landmark with greater than 90% certainty. The model must verify the landmark's WGS-84 coordinates; the plugin then embeds those coordinates in the PSD/JPEG XMP metadata and writes the location-aware Description and keywords. Below that threshold, it writes visual-subject keywords only, does not guess a location, and leaves the generated Description empty.
-
-Whenever a location is established from source GPS, a verified landmark, or an existing source Description, the plugin also writes City, State/Province, Country, and the IPTC three-letter ISO Country Code into both output formats.
-
-Each selected photo is independently checked with image recognition for a named landmark, building, park, venue, neighborhood, or site. Its specific name is written to IPTC Sublocation only when confidence is strictly greater than 90%; otherwise Sublocation stays blank. Identifications are never carried from one photo to another. If the exact location cannot be verified, all generated location fields may remain blank. GPS coordinates are kept in metadata and are never written into Description.
-
-Metadata finalization requires an explicit `locationDecision`. If the model identifies or names any place in its reasoning, Description, or Keywords, the decision must be `verified` and complete structured location fields are mandatory. With no source GPS or source Description, a visually verified place also requires `inferredLocation` above 90% confidence and verified coordinates. `unverified` is valid only when no place names are emitted. This prevents outputs that contain location keywords while leaving City/Country/Sublocation blank.
-
-When source metadata contains a Creator, the plugin preserves any existing Copyright Notice or fills an empty notice with `Copyright (c) <Creator>. All rights reserved.` It marks the output as Copyrighted and writes XMP Rights and Usage Terms stating that the Creator retains all rights. These protections are embedded in both PSD and JPEG outputs.
-
-Rights Usage Terms use the actual Creator name (for example, `All rights reserved. Bryan Smith retains all rights.`), never the generic phrase “The Creator.” When a matching official value can be verified, the model may also supply one or more six-digit IPTC Scene-NewsCodes; uncertain codes are omitted.
-
-After each finalized photo, the plugin reports elapsed processing time and the OpenCode-recorded token delta (input, output, reasoning, and cache read/write). To avoid spending tokens on a summary after every image, it requests session compaction when the active context reaches 65% of the selected model's limit or after eight photos, whichever comes first. Set `RAW_PHOTO_PROCESSOR_COMPACT_AT`/plugin option `compactAt` from 0.4–0.9 and `RAW_PHOTO_PROCESSOR_COMPACT_EVERY`/`compactEvery` from 2–50 to tune those thresholds. Compaction replaces older conversation with a summary rather than deleting active plugin state.
-
-The model receives only the RAW workflow tool needed for the current stage: Start with no active job, Apply while reviewing previews, or Finalize Metadata after the finished JPEG. Cancel remains available during an active job. Five-shot preview sets are rendered in one Photoshop bridge call, and the attachment-safe identification JPEG is produced in the same bridge call as the PSD/JPEG save. This reduces a normal photo from five Photoshop launches to four and a bracket set from nine launches to four.
-
-The complete official IPTC Scene-NewsCodes vocabulary is bundled locally, so selecting Scene codes does not require a web lookup. Location research remains photo-specific.
-
-Every processed photo is independently analyzed and, when a location is available or confidently inferred, independently researched. Descriptions and complete keyword sets must be photo-specific. The plugin rejects an exactly reused Description or identical complete keyword set within the same batch, while allowing individual relevant terms such as a shared city or `landscape` to overlap.
-
-## Select Terra instead
-
-Set this environment variable before starting or restarting the OpenCode service:
+The command defaults to `openai/gpt-6-luna` and falls back to `openai/gpt-5.6-terra`. To select another model before restarting OpenCode:
 
 ```powershell
-$env:RAW_PHOTO_PROCESSOR_MODEL = "openai/gpt-5.6-terra"
+$env:RAW_PHOTO_METADATA_PROCESSOR_MODEL = "openai/gpt-5.6-terra"
 opencode service restart
 ```
 
-No project configuration entry is required because OpenCode automatically discovers the plugin under `.opencode/plugins`.
+## Metadata workflow
 
-## Notes
+For each asset, the plugin:
 
-- Supported formats include ARW, CR2/CR3, DNG, NEF, RAF, ORF, RW2, and other common proprietary RAW extensions.
-- Camera Raw must support the camera's file format and lens profile. `Remove Chromatic Aberration` and `Use Profile Corrections` are requested for every image; profile correction depends on an installed/matched Adobe lens profile.
-- Photoshop remains visible while the COM automation runs. Do not interact with it during a batch.
-- “Open as Copy” is implemented non-interactively by opening the RAW with its temporary XMP into a new, unsaved Photoshop document. The source RAW and prior sidecar remain unchanged.
+1. Reads existing GPS, Description, and Creator metadata without changing the image.
+2. Creates a temporary, maximum-1600-pixel JPEG preview for model vision. The preview is deleted when the job ends.
+3. Independently identifies and researches the image.
+4. Writes photo-specific IPTC Description and keywords.
+5. Applies the baseline's location rules:
+   - no identification of individual people;
+   - any named place requires a verified location and complete City, State/Province, Country, and ISO Country Code;
+   - Sublocation requires image-recognition confidence strictly above 90%;
+   - without source GPS or Description, inferred landmark coordinates require independently verified confidence above 90%; and
+   - coordinates are never placed in Description.
+6. Assigns **all applicable codes** from the complete active IPTC Scene-NewsCodes vocabulary (`010100` through `012400`).
+7. Preserves Creator and an existing copyright notice. When Creator exists but the notice is blank, it adds `Copyright (c) <Creator>. All rights reserved.`, marks the work copyrighted, and writes creator-specific XMP Usage Terms.
+
+Descriptions and complete keyword sets must be unique within a batch. Relevant individual keywords may overlap.
+
+## File writing behavior
+
+- **PSD and JPEG:** XMP is updated in place through Adobe XMP; image pixels are not decoded and re-saved.
+- **DNG and supported RAW containers:** metadata is embedded when Adobe's installed XMP handler permits safe updates.
+- **Proprietary RAW:** when embedding is unsupported, Adobe-compatible `<basename>.xmp` sidecars are written or updated while preserving the packet's other XMP properties.
+
+Existing metadata outside the fields managed by this plugin is preserved. Source GPS is retained; verified inferred GPS is added only when source GPS is absent.
+
+## Supported inputs
+
+- RAW: 3FR, ARW, CR2, CR3, DNG, ERF, IIQ, KDC, MOS, MRW, NEF, NRW, ORF, PEF, RAF, RAW, RW2, RWL, SRW, and X3F
+- PSD
+- JPG and JPEG
+
+## Requirements
+
+- Windows
+- Adobe Photoshop with AdobeXMPScript
+- Adobe Camera Raw support for any proprietary RAW formats being previewed
+
+Photoshop remains visible during preview and metadata bridge calls. Do not interact with it while a batch is active. Cancellation is reserved for an explicit user request.

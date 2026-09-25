@@ -1,5 +1,5 @@
 {
-  "name": "raw-photo-processor",
+  "name": "raw-photo-metadata-processor",
   "version": "0.1.0",
   "private": true,
   "type": "module",

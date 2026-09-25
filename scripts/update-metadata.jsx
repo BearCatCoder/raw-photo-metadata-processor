@@ -1,6 +1,16 @@
 #target photoshop
 
 (function () {
+    if (ExternalObject.AdobeXMPScript === undefined) {
+        ExternalObject.AdobeXMPScript = new ExternalObject("lib:AdobeXMPScript");
+    }
+
+    var NS_DC = "http://purl.org/dc/elements/1.1/";
+    var NS_EXIF = "http://ns.adobe.com/exif/1.0/";
+    var NS_PHOTOSHOP = "http://ns.adobe.com/photoshop/1.0/";
+    var NS_IPTC = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/";
+    var NS_RIGHTS = "http://ns.adobe.com/xap/1.0/rights/";
+
     function gpsValue(decimal, positive, negative) {
         var absolute = Math.abs(Number(decimal));
         var degrees = Math.floor(absolute);
@@ -8,90 +18,122 @@
         return degrees + "," + minutes.toFixed(6) + (Number(decimal) >= 0 ? positive : negative);
     }
 
-    function applyMetadata(doc) {
+    function propertyText(value) {
+        return value === null || value === undefined ? "" : String(value).replace(/^\s+|\s+$/g, "");
+    }
+
+    function firstArrayItem(xmp, namespace, name) {
+        try { return propertyText(xmp.getArrayItem(namespace, name, 1)); } catch (_) { return ""; }
+    }
+
+    function applyMetadata(xmp) {
         if (typeof RPP_CONFIG.description === "string" && RPP_CONFIG.description.length) {
-            doc.info.caption = RPP_CONFIG.description;
+            xmp.setLocalizedText(NS_DC, "description", "", "x-default", RPP_CONFIG.description);
         }
         if (RPP_CONFIG.keywords && RPP_CONFIG.keywords.length) {
-            doc.info.keywords = RPP_CONFIG.keywords;
+            xmp.deleteProperty(NS_DC, "subject");
+            for (var keywordIndex = 0; keywordIndex < RPP_CONFIG.keywords.length; keywordIndex += 1) {
+                xmp.appendArrayItem(NS_DC, "subject", RPP_CONFIG.keywords[keywordIndex], 0, XMPConst.ARRAY_IS_UNORDERED);
+            }
+        }
+        if (RPP_CONFIG.gps) {
+            xmp.setProperty(NS_EXIF, "GPSLatitude", gpsValue(RPP_CONFIG.gps.latitude, "N", "S"));
+            xmp.setProperty(NS_EXIF, "GPSLongitude", gpsValue(RPP_CONFIG.gps.longitude, "E", "W"));
+            xmp.setProperty(NS_EXIF, "GPSMapDatum", "WGS-84");
+        }
+        if (RPP_CONFIG.location) {
+            xmp.setProperty(NS_PHOTOSHOP, "City", RPP_CONFIG.location.city);
+            xmp.setProperty(NS_PHOTOSHOP, "State", RPP_CONFIG.location.stateProvince);
+            xmp.setProperty(NS_PHOTOSHOP, "Country", RPP_CONFIG.location.country);
+            xmp.setProperty(NS_IPTC, "CountryCode", RPP_CONFIG.location.isoCountryCode);
+            if (RPP_CONFIG.location.sublocation) xmp.setProperty(NS_IPTC, "Location", RPP_CONFIG.location.sublocation);
+        }
+        if (RPP_CONFIG.iptcSceneCodes) {
+            xmp.deleteProperty(NS_IPTC, "Scene");
+            for (var sceneIndex = 0; sceneIndex < RPP_CONFIG.iptcSceneCodes.length; sceneIndex += 1) {
+                xmp.appendArrayItem(NS_IPTC, "Scene", RPP_CONFIG.iptcSceneCodes[sceneIndex], 0, XMPConst.ARRAY_IS_UNORDERED);
+            }
         }
 
-        var creator = String(RPP_CONFIG.creator || doc.info.author || "").replace(/^\s+|\s+$/g, "");
-        var copyrightNotice = String(doc.info.copyrightNotice || "").replace(/^\s+|\s+$/g, "");
+        var creator = propertyText(RPP_CONFIG.creator) || firstArrayItem(xmp, NS_DC, "creator");
         if (creator) {
-            if (!copyrightNotice) {
-                copyrightNotice = "Copyright (c) " + creator + ". All rights reserved.";
-                doc.info.copyrightNotice = copyrightNotice;
+            var notice = "";
+            try { notice = propertyText(xmp.getLocalizedText(NS_DC, "rights", "", "x-default")); } catch (_) {}
+            if (!notice) {
+                try { notice = propertyText(xmp.getProperty(NS_PHOTOSHOP, "Copyright")); } catch (_) {}
             }
-            doc.info.copyrighted = CopyrightedType.COPYRIGHTEDWORK;
-        }
-
-        if (RPP_CONFIG.gps || RPP_CONFIG.location || creator || (RPP_CONFIG.iptcSceneCodes && RPP_CONFIG.iptcSceneCodes.length)) {
-            if (ExternalObject.AdobeXMPScript === undefined) {
-                ExternalObject.AdobeXMPScript = new ExternalObject("lib:AdobeXMPScript");
-            }
-            var xmp = new XMPMeta(doc.xmpMetadata.rawData);
-            if (RPP_CONFIG.gps) {
-                var exifNamespace = "http://ns.adobe.com/exif/1.0/";
-                xmp.setProperty(exifNamespace, "GPSLatitude", gpsValue(RPP_CONFIG.gps.latitude, "N", "S"));
-                xmp.setProperty(exifNamespace, "GPSLongitude", gpsValue(RPP_CONFIG.gps.longitude, "E", "W"));
-                xmp.setProperty(exifNamespace, "GPSMapDatum", "WGS-84");
-            }
-            if (RPP_CONFIG.location) {
-                var photoshopNamespace = "http://ns.adobe.com/photoshop/1.0/";
-                var iptcCoreNamespace = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/";
-                doc.info.city = RPP_CONFIG.location.city;
-                doc.info.provinceState = RPP_CONFIG.location.stateProvince;
-                doc.info.country = RPP_CONFIG.location.country;
-                xmp.setProperty(photoshopNamespace, "City", RPP_CONFIG.location.city);
-                xmp.setProperty(photoshopNamespace, "State", RPP_CONFIG.location.stateProvince);
-                xmp.setProperty(photoshopNamespace, "Country", RPP_CONFIG.location.country);
-                xmp.setProperty(iptcCoreNamespace, "CountryCode", RPP_CONFIG.location.isoCountryCode);
-                if (RPP_CONFIG.location.sublocation) {
-                    xmp.setProperty(iptcCoreNamespace, "Location", RPP_CONFIG.location.sublocation);
-                }
-            }
-            if (RPP_CONFIG.iptcSceneCodes && RPP_CONFIG.iptcSceneCodes.length) {
-                var sceneNamespace = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/";
-                xmp.deleteProperty(sceneNamespace, "Scene");
-                for (var sceneIndex = 0; sceneIndex < RPP_CONFIG.iptcSceneCodes.length; sceneIndex += 1) {
-                    xmp.appendArrayItem(sceneNamespace, "Scene", RPP_CONFIG.iptcSceneCodes[sceneIndex], 0, XMPConst.ARRAY_IS_UNORDERED);
-                }
-            }
-            if (creator) {
-                var dcNamespace = "http://purl.org/dc/elements/1.1/";
-                var rightsNamespace = "http://ns.adobe.com/xap/1.0/rights/";
-                xmp.setLocalizedText(dcNamespace, "rights", "", "x-default", copyrightNotice);
-                xmp.setProperty(rightsNamespace, "Marked", true, XMPConst.BOOLEAN);
-                xmp.setLocalizedText(rightsNamespace, "UsageTerms", "", "x-default", "All rights reserved. " + creator + " retains all rights.");
-            }
-            doc.xmpMetadata.rawData = xmp.serialize();
+            if (!notice) notice = "Copyright (c) " + creator + ". All rights reserved.";
+            xmp.setProperty(NS_PHOTOSHOP, "Copyright", notice);
+            xmp.setLocalizedText(NS_DC, "rights", "", "x-default", notice);
+            xmp.setProperty(NS_RIGHTS, "Marked", true, XMPConst.BOOLEAN);
+            xmp.setLocalizedText(NS_RIGHTS, "UsageTerms", "", "x-default", "All rights reserved. " + creator + " retains all rights.");
         }
     }
 
-    var originalDialogs = app.displayDialogs;
-    var doc = null;
+    function readSidecar(file) {
+        if (!file.exists) return null;
+        file.encoding = "UTF-8";
+        if (!file.open("r")) return null;
+        try { return file.read(); } finally { file.close(); }
+    }
+
+    function writeSidecar(file, xmp) {
+        file.encoding = "UTF-8";
+        file.lineFeed = "Unix";
+        if (!file.open("w")) throw new Error("Could not write XMP sidecar: " + file.fsName);
+        try { file.write(xmp.serialize()); } finally { file.close(); }
+    }
+
+    var result = new File(RPP_CONFIG.result);
+    result.encoding = "UTF-8";
+    result.open("w");
     try {
-        app.displayDialogs = DialogModes.NO;
+        for (var itemIndex = 0; itemIndex < RPP_CONFIG.items.length; itemIndex += 1) {
+            var item = RPP_CONFIG.items[itemIndex];
+            var source = new File(item.input);
+            var sidecar = new File(item.sidecar);
+            var extension = source.name.toLowerCase().replace(/^.*\./, "");
+            var raw = /^(3fr|arw|cr2|cr3|dng|erf|iiq|kdc|mos|mrw|nef|nrw|orf|pef|raf|raw|rw2|rwl|srw|x3f)$/.test(extension);
+            var xmpFile = null;
+            var xmp = null;
+            var direct = false;
+            try {
+                xmpFile = new XMPFile(source.fsName, XMPConst.UNKNOWN, XMPConst.OPEN_FOR_UPDATE);
+                xmp = xmpFile.getXMP();
+                if (!xmp) xmp = new XMPMeta();
+                applyMetadata(xmp);
+                if (xmpFile.canPutXMP(xmp)) {
+                    xmpFile.putXMP(xmp);
+                    xmpFile.closeFile(XMPConst.CLOSE_UPDATE_SAFELY);
+                    xmpFile = null;
+                    direct = true;
+                }
+            } catch (_) {
+                if (xmpFile) {
+                    try { xmpFile.closeFile(); } catch (__) {}
+                    xmpFile = null;
+                }
+            }
 
-        doc = app.open(new File(RPP_CONFIG.psd));
-        applyMetadata(doc);
-        var psdOptions = new PhotoshopSaveOptions();
-        psdOptions.layers = true;
-        psdOptions.embedColorProfile = true;
-        doc.saveAs(new File(RPP_CONFIG.psd), psdOptions, true, Extension.LOWERCASE);
-        doc.close(SaveOptions.DONOTSAVECHANGES);
-        doc = null;
+            if (!direct && xmpFile) {
+                try { xmpFile.closeFile(); } catch (_) {}
+                xmpFile = null;
+            }
 
-        doc = app.open(new File(RPP_CONFIG.jpeg));
-        applyMetadata(doc);
-        var jpegOptions = new JPEGSaveOptions();
-        jpegOptions.quality = 12;
-        jpegOptions.embedColorProfile = true;
-        jpegOptions.formatOptions = FormatOptions.STANDARDBASELINE;
-        doc.saveAs(new File(RPP_CONFIG.jpeg), jpegOptions, true, Extension.LOWERCASE);
+            if (!direct) {
+                if (!raw) throw new Error("Adobe XMP could not safely update metadata in place: " + source.fsName);
+                var sidecarText = readSidecar(sidecar);
+                if (sidecarText) {
+                    try { xmp = new XMPMeta(sidecarText); } catch (_) {}
+                }
+                if (!xmp) xmp = new XMPMeta();
+                applyMetadata(xmp);
+                writeSidecar(sidecar, xmp);
+            }
+            var mode = (!direct || (raw && sidecar.exists)) ? "sidecar" : "embedded";
+            result.writeln(source.fsName + "\t" + mode);
+        }
     } finally {
-        if (doc) doc.close(SaveOptions.DONOTSAVECHANGES);
-        app.displayDialogs = originalDialogs;
+        result.close();
     }
 }());

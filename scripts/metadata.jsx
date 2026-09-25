@@ -1,59 +1,17 @@
 #target photoshop
 
 (function () {
-    function parseBias(value) {
-        if (value === null || value === undefined) return null;
-        var text = String(value).replace(/&quot;/g, '"').replace(/^\s+|\s+$/g, "");
-        var rational = text.match(/([+-]?\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/);
-        if (rational) {
-            var denominator = Number(rational[2]);
-            return denominator ? Number(rational[1]) / denominator : null;
-        }
-        var decimal = text.match(/[+-]?\d+(?:\.\d+)?/);
-        return decimal ? Number(decimal[0]) : null;
-    }
-
-    function readBias(doc) {
-        var raw = "";
-        try { raw = doc.xmpMetadata.rawData || ""; } catch (_) {}
-        var patterns = [
-            /exif:ExposureBiasValue\s*=\s*"([^"]+)"/i,
-            /<exif:ExposureBiasValue[^>]*>([^<]+)<\/exif:ExposureBiasValue>/i,
-            /aux:ExposureBias\s*=\s*"([^"]+)"/i
-        ];
-        for (var p = 0; p < patterns.length; p += 1) {
-            var match = raw.match(patterns[p]);
-            if (match) {
-                var parsed = parseBias(match[1]);
-                if (parsed !== null && isFinite(parsed)) return parsed;
-            }
-        }
-        try {
-            var exif = doc.info.exif;
-            for (var i = 0; i < exif.length; i += 1) {
-                var label = String(exif[i][0]).toLowerCase();
-                if (label.indexOf("exposure bias") >= 0 || label.indexOf("exposure compensation") >= 0) {
-                    var fallback = parseBias(exif[i][1]);
-                    if (fallback !== null && isFinite(fallback)) return fallback;
-                }
-            }
-        } catch (_) {}
-        return null;
-    }
-
     function parseCoordinate(value) {
         if (value === null || value === undefined) return null;
         var text = String(value).replace(/&quot;/g, '"').replace(/^\s+|\s+$/g, "");
         var directionMatch = text.match(/([NSEW])/i);
         var direction = directionMatch ? directionMatch[1].toUpperCase() : "";
-        var cleaned = text.replace(/[NSEW]/ig, " ");
-        var parts = cleaned.indexOf(",") >= 0 ? cleaned.split(",") : cleaned.split(/\s+/);
+        var parts = text.replace(/[NSEW]/ig, " ").replace(/,/g, " ").split(/\s+/);
         var values = [];
         for (var i = 0; i < parts.length; i += 1) {
-            var part = parts[i].replace(/^\s+|\s+$/g, "");
-            if (!part) continue;
-            var rational = part.match(/^([+-]?\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
-            var parsed = rational ? Number(rational[1]) / Number(rational[2]) : Number(part);
+            if (!parts[i]) continue;
+            var rational = parts[i].match(/^([+-]?\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
+            var parsed = rational ? Number(rational[1]) / Number(rational[2]) : Number(parts[i]);
             if (isFinite(parsed)) values.push(parsed);
         }
         if (!values.length) return null;
@@ -97,22 +55,20 @@
         app.displayDialogs = DialogModes.NO;
         for (var index = 0; index < RPP_CONFIG.inputs.length; index += 1) {
             var doc = null;
-            var bias = null;
             var latitude = null;
             var longitude = null;
-            var sourceDescription = "";
+            var description = "";
             var creator = "";
             try {
                 doc = app.open(new File(RPP_CONFIG.inputs[index]));
-                bias = readBias(doc);
                 latitude = readCoordinate(doc, "latitude");
                 longitude = readCoordinate(doc, "longitude");
-                try { sourceDescription = String(doc.info.caption || "").replace(/[\t\r\n]+/g, " "); } catch (_) {}
+                try { description = String(doc.info.caption || "").replace(/[\t\r\n]+/g, " "); } catch (_) {}
                 try { creator = String(doc.info.author || "").replace(/[\t\r\n]+/g, " "); } catch (_) {}
             } finally {
                 if (doc) doc.close(SaveOptions.DONOTSAVECHANGES);
             }
-            output.writeln(index + "\t" + (bias === null ? "" : String(bias)) + "\t" + (latitude === null ? "" : String(latitude)) + "\t" + (longitude === null ? "" : String(longitude)) + "\t" + sourceDescription + "\t" + creator);
+            output.writeln(index + "\t" + (latitude === null ? "" : String(latitude)) + "\t" + (longitude === null ? "" : String(longitude)) + "\t" + description + "\t" + creator);
         }
     } finally {
         output.close();
