@@ -68,7 +68,12 @@ const EDIT_SCHEMA = {
       maxItems: 30,
       uniqueItems: true,
       items: { type: "string", minLength: 1, maxLength: 64 },
-      description: "Concise IPTC keywords describing the finished JPEG. Include location terms only when the location is verified; never include names of individual people.",
+      description: "Concise IPTC keywords describing the finished JPEG. If any keyword names a landmark, city, region, country, venue, park, building, or other place, locationDecision must be verified and complete location metadata is required. Never include names of individual people.",
+    },
+    locationDecision: {
+      type: "string",
+      enum: ["verified", "unverified"],
+      description: "Required explicit decision for this photo. Use verified whenever any place is identified or named in Description/Keywords; use unverified only when no exact place can be established and no place names are emitted.",
     },
     inferredLocation: {
       type: "object",
@@ -103,7 +108,7 @@ const ADJUSTMENT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: Object.fromEntries(
-    Object.entries(EDIT_SCHEMA.properties).filter(([name]) => !["description", "keywords", "inferredLocation", "location"].includes(name)),
+    Object.entries(EDIT_SCHEMA.properties).filter(([name]) => !["description", "keywords", "locationDecision", "inferredLocation", "location"].includes(name)),
   ),
 } as const
 
@@ -113,10 +118,11 @@ const METADATA_SCHEMA = {
   properties: {
     description: EDIT_SCHEMA.properties.description,
     keywords: EDIT_SCHEMA.properties.keywords,
+    locationDecision: EDIT_SCHEMA.properties.locationDecision,
     inferredLocation: EDIT_SCHEMA.properties.inferredLocation,
     location: EDIT_SCHEMA.properties.location,
   },
-  required: ["keywords"],
+  required: ["keywords", "locationDecision"],
 } as const
 
 type Edit = {
@@ -141,6 +147,7 @@ type Edit = {
   cropScale?: number
   description?: string
   keywords?: string[]
+  locationDecision?: "verified" | "unverified"
   inferredLocation?: {
     landmark: string
     confidence: number
@@ -464,7 +471,7 @@ function metadataPromptText(job: Job, entry: JobEntry) {
   const gps = entry.gps
     ? `${entry.gps.latitude.toFixed(6)}, ${entry.gps.longitude.toFixed(6)}`
     : "none"
-  return `An attachment-safe JPEG rendered directly from the finished full-resolution JPEG is attached as image content. It preserves the finished composition and is scaled only for visual identification. Use this attached image—not a pathname—for identification, then call raw_photo_processor_finalize_metadata. Metadata will be written to the original full-resolution PSD and quality-12 JPEG.\nJob: ${job.id}\nSource GPS: ${gps}\nSource Description: ${entry.sourceDescription ?? "none"}\nCreator: ${entry.creator ?? "none"}\nPerform a fresh per-photo lookup. Do not identify individual people or put coordinates in Description.`
+  return `An attachment-safe JPEG rendered directly from the finished full-resolution JPEG is attached as image content. It preserves the finished composition and is scaled only for visual identification. Use this attached image—not a pathname—for identification, then call raw_photo_processor_finalize_metadata. Metadata will be written to the original full-resolution PSD and quality-12 JPEG.\nJob: ${job.id}\nSource GPS: ${gps}\nSource Description: ${entry.sourceDescription ?? "none"}\nCreator: ${entry.creator ?? "none"}\nPerform a fresh per-photo lookup. You must explicitly set locationDecision. If you identify or name any landmark, city, region, country, venue, park, building, or other place in your reasoning, Description, or Keywords, locationDecision must be verified and you must provide complete structured location metadata (plus inferredLocation when source GPS and source Description are absent). Use unverified only when emitting no place names. Do not identify individual people or put coordinates in Description.`
 }
 
 function metadataResult(job: Job, entry: JobEntry) {
@@ -523,7 +530,7 @@ export default definePlugin({
           await ctx.session.prompt({
             sessionID,
             delivery,
-            text: `Run the RAW photo workflow for exactly this folder: ${JSON.stringify(folder)}. Call raw_photo_processor_start once. Image-producing tools use queued session attachments because Code Mode cannot expose image pixels in their immediate return value. Whenever start, apply, or finalize_metadata says image attachments were queued, immediately end that turn and wait for the next queued user message; do not call any other RAW processor tool, do not restart, and especially do not cancel while waiting. The queued message is the authoritative continuation and contains viewable images. This is a strict two-phase workflow for each selected photo. First use the queued temporary preview image(s) to choose the best bracket exposure and realistic Camera Raw/crop adjustments, then call raw_photo_processor_apply. Wait for its queued finished-JPEG message. Second, use only that attached finished JPEG for identification, perform a fresh per-photo location lookup, and call raw_photo_processor_finalize_metadata. Wait for its queued next-preview message, then continue. If exact location cannot be verified, omit location fields and location Description. Sublocation image recognition requires confidence strictly above 90%; otherwise leave it blank. Never put coordinates in Description, copy another photo's metadata, identify individual people, or cancel unless the user explicitly asks you to cancel. Repeat both phases until completion.`,
+            text: `Run the RAW photo workflow for exactly this folder: ${JSON.stringify(folder)}. Call raw_photo_processor_start once. Image-producing tools use queued session attachments because Code Mode cannot expose image pixels in their immediate return value. Whenever start, apply, or finalize_metadata says image attachments were queued, immediately end that turn and wait for the next queued user message; do not call any other RAW processor tool, restart, or cancel while waiting. First use queued previews to choose bracket exposure and adjustments, call apply, then wait for the queued finished-JPEG attachment. Use only that finished image for identification and call finalize_metadata. Every photo requires locationDecision. If you identify or name any landmark, city, region, country, venue, park, building, or other place anywhere in your reasoning, Description, or Keywords, set locationDecision to verified and provide complete structured location metadata; with no source GPS or source Description, also provide inferredLocation with greater than 90% confidence and verified coordinates. A famous, visually unmistakable landmark above 90% confidence counts as verified even without source GPS. Use unverified only when no exact place is established and emit no place names in Description or Keywords. Never put coordinates in Description, copy metadata, identify individual people, or cancel unless the user explicitly asks. Repeat until completion.`,
           })
         },
       })
@@ -685,8 +692,21 @@ export default definePlugin({
             throw new Error("Inferred landmark location requires confidence greater than 0.90 and valid verified coordinates.")
           }
           const location = edit.location
+          const locationDecision = edit.locationDecision
+          if (locationDecision !== "verified" && locationDecision !== "unverified") {
+            throw new Error("Set locationDecision to verified or unverified for this photo.")
+          }
           const descriptionLocation = Boolean(entry.sourceDescription?.trim() && location)
           const hasKnownLocation = Boolean(location && (entry.gps || inferred || descriptionLocation))
+          if (locationDecision === "verified" && !location) {
+            throw new Error("A verified location decision requires complete structured location metadata.")
+          }
+          if (locationDecision === "verified" && !entry.gps && !entry.sourceDescription?.trim() && !inferred) {
+            throw new Error("A visually verified location without source GPS or source Description requires inferredLocation above 90% confidence with verified coordinates.")
+          }
+          if (locationDecision === "unverified" && (location || inferred || edit.description?.trim())) {
+            throw new Error("An unverified location decision must omit inferredLocation, structured location fields, and location Description.")
+          }
           if (inferred && !location) throw new Error("A verified inferred location requires complete structured location metadata.")
           if (inferred && !location?.sublocation?.trim()) throw new Error("A verified inferred landmark requires its specific name in Sublocation.")
           if (location) {
