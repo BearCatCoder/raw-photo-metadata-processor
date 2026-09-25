@@ -12,6 +12,8 @@ Restart OpenCode after installation, then run:
 
 The command defaults to `openai/gpt-6-luna` and falls back to `openai/gpt-5.6-terra` if Luna is unavailable. The model examines a temporary JPEG preview of each photo and selects restrained Camera Raw values, straightening, and a 3:2 or 2:3 crop. The plugin then creates:
 
+After Camera Raw, straightening, and cropping, the still-open Photoshop document receives a required conservative finishing pass before either output is saved. The model supplies residual exposure, brightness, contrast, Levels midtone gamma, and midtone color-balance corrections. Neutral values are used when Camera Raw already achieved the correct result. Limits are intentionally narrow to preserve a natural, photorealistic appearance.
+
 - `<source folder>\PSDs\<name>.psd`
 - `<source folder>\JPEGs\<name>.jpg` (8 Bits/Channel, JPEG quality 12)
 

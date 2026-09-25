@@ -68,6 +68,21 @@ const EDIT_SCHEMA = {
     cropCenterX: number(0, 1, "Horizontal crop focal point, normalized from left to right."),
     cropCenterY: number(0, 1, "Vertical crop focal point, normalized from top to bottom."),
     cropScale: number(0.5, 1, "Fraction of the largest safe 3:2 crop to retain."),
+    photoshopFinish: {
+      type: "object",
+      additionalProperties: false,
+      description: "Subtle photorealistic finishing applied to the open Photoshop document after crop and before PSD/JPEG saves. Correct only residual issues left after Camera Raw; use neutral values when no further correction is needed.",
+      properties: {
+        exposure: number(-2, 2, "Residual Photoshop exposure correction in stops. Keep close to zero."),
+        brightness: number(-50, 50, "Residual Photoshop brightness correction."),
+        contrast: number(-50, 50, "Residual Photoshop contrast correction."),
+        toneGamma: number(0.5, 1.5, "Photoshop Levels midtone gamma. Use 1 for neutral; below 1 brightens midtones and above 1 darkens them."),
+        cyanRed: number(-30, 30, "Midtone color balance: negative adds cyan, positive adds red."),
+        magentaGreen: number(-30, 30, "Midtone color balance: negative adds magenta, positive adds green."),
+        yellowBlue: number(-30, 30, "Midtone color balance: negative adds yellow, positive adds blue."),
+      },
+      required: ["exposure", "brightness", "contrast", "toneGamma", "cyanRed", "magentaGreen", "yellowBlue"],
+    },
     description: {
       type: "string",
       maxLength: 2000,
@@ -128,6 +143,7 @@ const ADJUSTMENT_SCHEMA = {
   properties: Object.fromEntries(
     Object.entries(EDIT_SCHEMA.properties).filter(([name]) => !["description", "keywords", "locationDecision", "iptcSceneCodes", "inferredLocation", "location"].includes(name)),
   ),
+  required: ["photoshopFinish"],
 } as const
 
 const METADATA_SCHEMA = {
@@ -164,6 +180,15 @@ type Edit = {
   cropCenterX?: number
   cropCenterY?: number
   cropScale?: number
+  photoshopFinish?: {
+    exposure: number
+    brightness: number
+    contrast: number
+    toneGamma: number
+    cyanRed: number
+    magentaGreen: number
+    yellowBlue: number
+  }
   description?: string
   keywords?: string[]
   locationDecision?: "verified" | "unverified"
@@ -352,8 +377,8 @@ function currentPromptText(job: Job, message: string) {
     .join("\n")
   const metadataInstruction = `Use these preview(s) only to choose the exposure and image adjustments. Identification and metadata must wait until the finished JPEG is saved and returned.`
   const instruction = group.type === "bracket"
-    ? `This is a five-shot bracket set. Compare all five attached previews and call raw_photo_processor_apply with selectedOffset 0-4 for the best usable exposure. Only that frame will be processed.`
-    : `Analyze the attached preview, then call raw_photo_processor_apply with realistic Camera Raw values and a 3:2 crop.`
+    ? `This is a five-shot bracket set. Compare all five attached previews and call raw_photo_processor_apply with selectedOffset 0-4 for the best usable exposure plus restrained Camera Raw and Photoshop finishing adjustments. Only that frame will be processed.`
+    : `Analyze the attached preview, then call raw_photo_processor_apply with realistic Camera Raw values, a 3:2 crop, and a subtle photorealistic Photoshop finishing pass.`
   return `${message}\nJob: ${job.id}\nSequence position ${job.index + 1} of ${job.entries.length}:\n${exposureSummary}\n${instruction}\n${metadataInstruction}`
 }
 
@@ -480,6 +505,15 @@ async function applyEdit(pluginDirectory: string, entry: JobEntry, edit: Edit, o
       cropCenterX: clamp(edit.cropCenterX, 0.5, 0, 1),
       cropCenterY: clamp(edit.cropCenterY, 0.5, 0, 1),
       cropScale: clamp(edit.cropScale, 0.96, 0.5, 1),
+      photoshopFinish: {
+        exposure: clamp(edit.photoshopFinish?.exposure, 0, -2, 2),
+        brightness: clamp(edit.photoshopFinish?.brightness, 0, -50, 50),
+        contrast: clamp(edit.photoshopFinish?.contrast, 0, -50, 50),
+        toneGamma: clamp(edit.photoshopFinish?.toneGamma, 1, 0.5, 1.5),
+        cyanRed: clamp(edit.photoshopFinish?.cyanRed, 0, -30, 30),
+        magentaGreen: clamp(edit.photoshopFinish?.magentaGreen, 0, -30, 30),
+        yellowBlue: clamp(edit.photoshopFinish?.yellowBlue, 0, -30, 30),
+      },
       identificationPreview: entry.identificationPreview,
     }, signal)
     await stat(entry.identificationPreview)
@@ -643,7 +677,7 @@ export default definePlugin({
           await ctx.session.prompt({
             sessionID,
             delivery,
-            text: `Process exactly ${JSON.stringify(folder)}. Call raw_photo_processor_start once. For every queued image message, inspect its attachments, call the one available RAW workflow tool, then end the turn whenever more attachments are queued. Preview stage: choose the best bracket frame and realistic adjustments. Finished-JPEG stage: identify/research that photo and finalize unique metadata. Never restart, copy another photo's metadata, identify people, or cancel unless explicitly asked. Continue until complete.`,
+            text: `Process exactly ${JSON.stringify(folder)}. Call raw_photo_processor_start once. For every queued image message, inspect its attachments, call the one available RAW workflow tool, then end the turn whenever more attachments are queued. Preview stage: choose the best bracket frame, restrained Camera Raw corrections, crop, and required subtle photorealistic Photoshop finish. Finished-JPEG stage: identify/research that photo and finalize unique metadata. Never restart, copy another photo's metadata, identify people, or cancel unless explicitly asked. Continue until complete.`,
           })
         },
       })

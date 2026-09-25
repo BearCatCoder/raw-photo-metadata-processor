@@ -5,6 +5,34 @@
     function px(value) { return value.as("px"); }
     function clamp(value, low, high) { return Math.max(low, Math.min(high, value)); }
 
+    function applyPhotoshopFinish(doc, finish) {
+        if (!finish) return;
+        var exposure = clamp(Number(finish.exposure) || 0, -2, 2);
+        var brightness = clamp(Number(finish.brightness) || 0, -50, 50);
+        var contrast = clamp(Number(finish.contrast) || 0, -50, 50);
+        var toneGamma = clamp(Number(finish.toneGamma) || 1, 0.5, 1.5);
+        var cyanRed = clamp(Number(finish.cyanRed) || 0, -30, 30);
+        var magentaGreen = clamp(Number(finish.magentaGreen) || 0, -30, 30);
+        var yellowBlue = clamp(Number(finish.yellowBlue) || 0, -30, 30);
+
+        if (Math.abs(exposure) > 0.001) {
+            var exposureSettings = new ActionDescriptor();
+            exposureSettings.putDouble(charIDToTypeID("Exps"), exposure);
+            exposureSettings.putDouble(charIDToTypeID("Ofst"), 0);
+            exposureSettings.putDouble(charIDToTypeID("Gmm "), 1);
+            executeAction(charIDToTypeID("Exps"), exposureSettings, DialogModes.NO);
+        }
+        if (Math.abs(toneGamma - 1) > 0.001) {
+            doc.activeLayer.adjustLevels(0, 255, toneGamma, 0, 255);
+        }
+        if (Math.abs(brightness) > 0.001 || Math.abs(contrast) > 0.001) {
+            doc.activeLayer.adjustBrightnessContrast(brightness, contrast);
+        }
+        if (Math.abs(cyanRed) > 0.001 || Math.abs(magentaGreen) > 0.001 || Math.abs(yellowBlue) > 0.001) {
+            doc.activeLayer.adjustColorBalance([0, 0, 0], [cyanRed, magentaGreen, yellowBlue], [0, 0, 0], true);
+        }
+    }
+
     if (!RPP_CONFIG.overwrite && (fileExists(RPP_CONFIG.psd) || fileExists(RPP_CONFIG.jpeg))) {
         throw new Error("An output file already exists and overwrite is disabled.");
     }
@@ -66,6 +94,8 @@
             UnitValue(left + cropWidth, "px"),
             UnitValue(top + cropHeight, "px")
         ]);
+
+        applyPhotoshopFinish(doc, RPP_CONFIG.photoshopFinish);
 
         var psdOptions = new PhotoshopSaveOptions();
         psdOptions.layers = true;
