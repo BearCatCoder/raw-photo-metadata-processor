@@ -34,7 +34,8 @@ For each asset, the plugin:
    - without source GPS or Description, inferred landmark coordinates require independently verified confidence above 90%; and
    - coordinates are never placed in Description.
 6. Assigns **all applicable codes** from the complete active IPTC Scene-NewsCodes vocabulary (`010100` through `012400`).
-7. Preserves Creator and an existing copyright notice. When Creator exists but the notice is blank, it adds `Copyright (c) <Creator>. All rights reserved.`, marks the work copyrighted, and writes creator-specific XMP Usage Terms.
+7. Searches the complete locally bundled IPTC Subject NewsCodes vocabulary and assigns every applicable active eight-digit Subject Code. The local catalog contains all 1,404 entries, including 17 retired entries retained for completeness but blocked from assignment.
+8. Preserves Creator and an existing copyright notice. When Creator exists but the notice is blank, it adds `Copyright (c) <Creator>. All rights reserved.`, marks the work copyrighted, and writes creator-specific XMP Usage Terms.
 
 Descriptions and complete keyword sets must be unique within a batch. Relevant individual keywords may overlap.
 
@@ -45,6 +46,13 @@ Descriptions and complete keyword sets must be unique within a batch. Relevant i
 - **Proprietary RAW:** when embedding is unsupported, Adobe-compatible `<basename>.xmp` sidecars are written or updated while preserving the packet's other XMP properties.
 
 Existing metadata outside the fields managed by this plugin is preserved. Source GPS is retained; verified inferred GPS is added only when source GPS is absent.
+
+## Local IPTC vocabularies
+
+- Scene NewsCodes: all 24 active codes are embedded in the plugin.
+- Subject NewsCodes: `data/iptc-subject-codes.json` contains all 1,404 official English entries from the IPTC controlled-vocabulary server under CC BY 4.0.
+
+The Subject Code vocabulary is deprecated by IPTC in favor of Media Topics, but it is included because this plugin explicitly supports the legacy `Iptc4xmpCore:SubjectCode` field. During each asset workflow, the model must search the local catalog before submitting metadata. Returned codes are validated against the bundled active-code set before they are written.
 
 ## Supported inputs
 

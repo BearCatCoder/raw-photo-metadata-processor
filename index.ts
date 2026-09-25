@@ -27,6 +27,22 @@ const IPTC_SCENES = {
 const IPTC_SCENE_CODES = new Set<string>(Object.keys(IPTC_SCENES))
 const IPTC_SCENE_CATALOG = Object.entries(IPTC_SCENES).map(([code, name]) => `${code} ${name}`).join("; ")
 
+type SubjectCodeEntry = {
+  code: string
+  name: string
+  definition: string
+  broader: string | null
+  retired: boolean
+}
+
+type SubjectCodeCatalog = {
+  source: string
+  scheme: string
+  released: string
+  license: string
+  entries: SubjectCodeEntry[]
+}
+
 const number = (minimum: number, maximum: number, description: string) => ({
   type: "number", minimum, maximum, description,
 })
@@ -60,6 +76,13 @@ const METADATA_SCHEMA = {
       items: { type: "string", enum: Object.keys(IPTC_SCENES) },
       description: "Every applicable official IPTC Scene-NewsCode from the complete supplied catalog. Include all that apply; use an empty array only when none can be assigned confidently.",
     },
+    iptcSubjectCodes: {
+      type: "array",
+      maxItems: 30,
+      uniqueItems: true,
+      items: { type: "string", pattern: "^\\d{8}$" },
+      description: "Every applicable active eight-digit IPTC Subject NewsCode found with the bundled local catalog search. Prefer the most specific applicable codes and include their broader codes when useful.",
+    },
     inferredLocation: {
       type: "object",
       additionalProperties: false,
@@ -87,7 +110,7 @@ const METADATA_SCHEMA = {
       required: ["city", "stateProvince", "country", "isoCountryCode"],
     },
   },
-  required: ["keywords", "locationDecision", "iptcSceneCodes"],
+  required: ["keywords", "locationDecision", "iptcSceneCodes", "iptcSubjectCodes"],
 } as const
 
 type Metadata = {
@@ -95,6 +118,7 @@ type Metadata = {
   keywords: string[]
   locationDecision: "verified" | "unverified"
   iptcSceneCodes: string[]
+  iptcSubjectCodes: string[]
   inferredLocation?: { landmark: string; confidence: number; latitude: number; longitude: number }
   location?: {
     sublocation?: string
@@ -114,6 +138,7 @@ type Asset = {
   gps?: { latitude: number; longitude: number } | null
   sourceDescription?: string | null
   creator?: string | null
+  subjectSearchCount?: number
 }
 
 type Job = {
@@ -162,6 +187,20 @@ function metadataRank(file: string) {
   if (RAW_EXTENSIONS.has(extension)) return 0
   if (PSD_EXTENSIONS.has(extension)) return 1
   return 2
+}
+
+function subjectSearchScore(entry: SubjectCodeEntry, query: string) {
+  const normalizedQuery = normalizeMetadataText(query)
+  const name = normalizeMetadataText(entry.name)
+  const definition = normalizeMetadataText(entry.definition)
+  if (!normalizedQuery) return 0
+  let score = name === normalizedQuery ? 200 : name.includes(normalizedQuery) ? 100 : 0
+  for (const term of normalizedQuery.split(/[^a-z0-9]+/).filter((item) => item.length > 1)) {
+    if (name.split(/[^a-z0-9]+/).includes(term)) score += 20
+    else if (name.includes(term)) score += 10
+    if (definition.includes(term)) score += 3
+  }
+  return score
 }
 
 async function runPhotoshop(pluginDirectory: string, script: string, config: unknown, signal: AbortSignal) {
@@ -222,7 +261,7 @@ async function prepareAsset(pluginDirectory: string, job: Job, signal: AbortSign
 
 function metadataPrompt(job: Job, asset: Asset) {
   const gps = asset.gps ? `${asset.gps.latitude.toFixed(6)}, ${asset.gps.longitude.toFixed(6)}` : "none"
-  return `Identify the attached image and call raw_photo_metadata_processor_update for job ${job.id}. The metadata will be written identically to: ${asset.files.map((file) => path.basename(file)).join(", ")}. Source GPS: ${gps}. Source Description: ${asset.sourceDescription ?? "none"}. Creator: ${asset.creator ?? "none"}. Research this image independently. Any named place requires locationDecision=verified and complete location fields; without source GPS/Description, also provide >90% inferredLocation. Otherwise use unverified and emit no place names. Never identify people or put coordinates in Description. Select every applicable Scene code, not merely one, from this complete official catalog: ${IPTC_SCENE_CATALOG}`
+  return `Identify the attached image for job ${job.id}. Before updating, call raw_photo_metadata_processor_search_subject_codes with concise queries for every visible subject category, event, activity, industry, sport, or concept that may apply. Then call raw_photo_metadata_processor_update. The metadata will be written identically to: ${asset.files.map((file) => path.basename(file)).join(", ")}. Source GPS: ${gps}. Source Description: ${asset.sourceDescription ?? "none"}. Creator: ${asset.creator ?? "none"}. Research this image independently. Any named place requires locationDecision=verified and complete location fields; without source GPS/Description, also provide >90% inferredLocation. Otherwise use unverified and emit no place names. Never identify people or put coordinates in Description. Select every applicable Scene code, not merely one, from this complete official catalog: ${IPTC_SCENE_CATALOG}. Select every applicable active Subject Code returned by the bundled local search, preferring specific codes.`
 }
 
 async function queueAsset(ctx: any, job: Job, message: string) {
@@ -235,7 +274,7 @@ async function queueAsset(ctx: any, job: Job, message: string) {
   })
 }
 
-function validateMetadata(job: Job, asset: Asset, metadata: Metadata) {
+function validateMetadata(job: Job, asset: Asset, metadata: Metadata, activeSubjectCodes: Set<string>) {
   const keywords = [...new Set((metadata.keywords ?? []).map((keyword) => keyword.trim()).filter(Boolean))]
   if (!keywords.length) throw new Error("Provide at least one non-identifying, photo-specific keyword.")
   const inferred = metadata.inferredLocation
@@ -283,6 +322,12 @@ function validateMetadata(job: Job, asset: Asset, metadata: Metadata) {
   if ((metadata.iptcSceneCodes ?? []).some((code) => !IPTC_SCENE_CODES.has(code))) {
     throw new Error("Every IPTC Scene Code must come from the complete official local catalog.")
   }
+  if (!asset.subjectSearchCount) {
+    throw new Error("Search the bundled IPTC Subject Code catalog for this asset before updating metadata.")
+  }
+  if ((metadata.iptcSubjectCodes ?? []).some((code) => !activeSubjectCodes.has(code))) {
+    throw new Error("Every IPTC Subject Code must be an active code from the bundled local catalog.")
+  }
   const descriptionFingerprint = metadata.description?.trim() ? normalizeMetadataText(metadata.description) : undefined
   const keywordsFingerprint = keywordFingerprint(keywords)
   if (descriptionFingerprint && job.descriptions.has(descriptionFingerprint)) {
@@ -298,6 +343,12 @@ export default definePlugin({
   id: "raw-photo-metadata-processor",
   async setup(ctx) {
     const pluginDirectory = path.dirname(fileURLToPath(import.meta.url))
+    const subjectCatalog = JSON.parse(
+      await readFile(path.join(pluginDirectory, "data", "iptc-subject-codes.json"), "utf8"),
+    ) as SubjectCodeCatalog
+    const subjectCodesByCode = new Map(subjectCatalog.entries.map((entry) => [entry.code, entry]))
+    const activeSubjectEntries = subjectCatalog.entries.filter((entry) => !entry.retired)
+    const activeSubjectCodes = new Set(activeSubjectEntries.map((entry) => entry.code))
     const configuredModel = process.env.RAW_PHOTO_METADATA_PROCESSOR_MODEL
       || (typeof ctx.options.model === "string" ? ctx.options.model : "openai/gpt-6-luna")
     const [requestedProvider, ...modelParts] = configuredModel.split("/")
@@ -306,7 +357,7 @@ export default definePlugin({
     await ctx.session.hook("context", (event) => {
       const jobID = sessionJobs.get(event.sessionID)
       const allowed = new Set(jobID
-        ? ["raw_photo_metadata_processor_update", "raw_photo_metadata_processor_cancel"]
+        ? ["raw_photo_metadata_processor_search_subject_codes", "raw_photo_metadata_processor_update", "raw_photo_metadata_processor_cancel"]
         : ["raw_photo_metadata_processor_start"])
       for (const name of Object.keys(event.tools)) {
         if (name.startsWith("raw_photo_metadata_processor_") && !allowed.has(name)) delete event.tools[name]
@@ -328,7 +379,7 @@ export default definePlugin({
           await ctx.session.prompt({
             sessionID,
             delivery,
-            text: `Update only metadata for supported images directly in ${JSON.stringify(folder)}. Call raw_photo_metadata_processor_start once. For each queued preview, independently identify and research it, assign all applicable IPTC Scene codes, call update, then end the turn when another preview is queued. Never edit pixels, identify people, reuse another image's metadata, restart, or cancel unless explicitly asked. Continue until complete.`,
+            text: `Update only metadata for supported images directly in ${JSON.stringify(folder)}. Call raw_photo_metadata_processor_start once. For each queued preview, independently identify and research it, search the bundled Subject Code catalog, assign all applicable IPTC Scene and Subject codes, call update, then end the turn when another preview is queued. Never edit pixels, identify people, reuse another image's metadata, restart, or cancel unless explicitly asked. Continue until complete.`,
           })
         },
       })
@@ -400,8 +451,55 @@ export default definePlugin({
       })
 
       editor.add({
+        name: "search_subject_codes",
+        description: "Search all 1,404 locally bundled IPTC Subject NewsCodes. Returns active matching codes with definitions and hierarchy; retired codes are retained locally but never returned for assignment.",
+        options: { namespace: "raw_photo_metadata_processor", codemode: true },
+        input: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            jobID: { type: "string" },
+            queries: {
+              type: "array",
+              minItems: 1,
+              maxItems: 12,
+              uniqueItems: true,
+              items: { type: "string", minLength: 2, maxLength: 80 },
+              description: "Concise English subject searches based on visible content, such as architecture, mountain, tourism, association football, or religious festival.",
+            },
+            limitPerQuery: { type: "integer", minimum: 1, maximum: 20, description: "Maximum matches per query; defaults to 8." },
+          },
+          required: ["jobID", "queries"],
+        },
+        execute: async (input: { jobID: string; queries: string[]; limitPerQuery?: number }, context) => {
+          const job = jobs.get(input.jobID)
+          if (!job) throw new Error("Unknown or completed metadata job.")
+          if (job.sessionID !== context.sessionID) throw new Error("This metadata job belongs to another session.")
+          const asset = job.assets[job.index]
+          asset.subjectSearchCount = (asset.subjectSearchCount ?? 0) + 1
+          const limit = Math.min(20, Math.max(1, input.limitPerQuery ?? 8))
+          const sections = input.queries.map((query) => {
+            const matches = activeSubjectEntries
+              .map((entry) => ({ entry, score: subjectSearchScore(entry, query) }))
+              .filter((item) => item.score > 0)
+              .sort((a, b) => b.score - a.score || a.entry.code.localeCompare(b.entry.code))
+              .slice(0, limit)
+            const lines = matches.map(({ entry }) => {
+              const parent = entry.broader ? subjectCodesByCode.get(entry.broader) : undefined
+              const hierarchy = parent ? `; broader ${parent.code} ${parent.name}` : ""
+              return `${entry.code} ${entry.name}${hierarchy} — ${entry.definition}`
+            })
+            return `Query: ${query}\n${lines.length ? lines.join("\n") : "No active matches. Try a broader synonym."}`
+          })
+          return {
+            content: `${sections.join("\n\n")}\n\nUse only returned eight-digit active codes. Search again with synonyms or broader/narrower concepts if these results do not cover every clearly applicable subject.`,
+          }
+        },
+      })
+
+      editor.add({
         name: "update",
-        description: "Write verified descriptive, location, rights, GPS fallback, and all applicable IPTC Scene metadata to the current RAW/PSD/JPEG asset group without changing pixels.",
+        description: "Write verified descriptive, location, rights, GPS fallback, and all applicable IPTC Scene and Subject Code metadata without changing pixels. Search the local Subject Code catalog first.",
         options: { namespace: "raw_photo_metadata_processor", codemode: true },
         input: {
           type: "object",
@@ -414,7 +512,7 @@ export default definePlugin({
           if (!job) throw new Error("Unknown or completed metadata job.")
           if (job.sessionID !== context.sessionID) throw new Error("This metadata job belongs to another session.")
           const asset = job.assets[job.index]
-          const validated = validateMetadata(job, asset, input.metadata)
+          const validated = validateMetadata(job, asset, input.metadata, activeSubjectCodes)
           const resultFile = path.join(job.work, `update-${job.index}.tsv`)
           await context.progress({ status: `Updating metadata for ${asset.files.length} file(s): ${path.basename(asset.representative)}` })
           await runPhotoshop(pluginDirectory, "update-metadata.jsx", {
@@ -423,6 +521,7 @@ export default definePlugin({
             description: input.metadata.description?.trim() || null,
             keywords: validated.keywords.slice(0, 30),
             iptcSceneCodes: [...new Set(input.metadata.iptcSceneCodes)].filter((code) => IPTC_SCENE_CODES.has(code)),
+            iptcSubjectCodes: [...new Set(input.metadata.iptcSubjectCodes)].filter((code) => activeSubjectCodes.has(code)),
             gps: validated.inferred ? { latitude: validated.inferred.latitude, longitude: validated.inferred.longitude } : null,
             location: validated.location ? {
               sublocation: validated.location.sublocation?.trim() || null,

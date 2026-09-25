@@ -54,6 +54,12 @@
                 xmp.appendArrayItem(NS_IPTC, "Scene", RPP_CONFIG.iptcSceneCodes[sceneIndex], 0, XMPConst.ARRAY_IS_UNORDERED);
             }
         }
+        if (RPP_CONFIG.iptcSubjectCodes) {
+            xmp.deleteProperty(NS_IPTC, "SubjectCode");
+            for (var subjectIndex = 0; subjectIndex < RPP_CONFIG.iptcSubjectCodes.length; subjectIndex += 1) {
+                xmp.appendArrayItem(NS_IPTC, "SubjectCode", RPP_CONFIG.iptcSubjectCodes[subjectIndex], 0, XMPConst.ARRAY_IS_UNORDERED);
+            }
+        }
 
         var creator = propertyText(RPP_CONFIG.creator) || firstArrayItem(xmp, NS_DC, "creator");
         if (creator) {
