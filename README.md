@@ -19,6 +19,8 @@ Existing outputs are skipped by default. The RAW file is never modified. A tempo
 
 Processing uses a strict two-phase workflow. First, every temporary JPEG preview—including all five images in a bracket set—is queued as an actual image attachment in the active OpenCode session so the model can select exposure and adjustments without relying on pathnames. Photoshop then saves the PSD followed by the maximum-quality JPEG. Second, the plugin queues the finished JPEG the same way for visual identification. These session attachments bypass Code Mode's path-only tool serialization. Only after identification does the plugin reopen both saved outputs and write matching metadata to the PSD and JPEG.
 
+Queued attachments arrive on the next session turn. The immediate tool result therefore instructs the model to end its current turn and wait; it must not process, restart, or cancel the job before the queued image message arrives. Cancellation is reserved for an explicit user request.
+
 Before processing, the plugin reads the Exposure Bias metadata up to five images ahead. A `0 EV` image followed by four non-zero-EV images is treated as one bracket set. The model compares all five previews, processes only the best exposure, and skips the other four. Non-zero frames encountered shortly before a new `0 EV` image are treated as an incomplete bracket run and skipped.
 
 When GPS coordinates are present, they are shown to the model so it can research the general subject/location and write an objective IPTC Description plus relevant subject and location keywords. The model is explicitly prohibited from identifying individual people.

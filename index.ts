@@ -300,12 +300,8 @@ function currentPromptText(job: Job, message: string) {
 
 function currentResult(job: Job, message: string) {
   const group = job.group ?? { type: "single" as const, indices: [job.index] }
-  const entries = group.indices.map((index) => job.entries[index])
   return {
-    content: [
-      { type: "text", text: currentPromptText(job, message) },
-      ...entries.map((entry) => ({ type: "file", uri: pathToFileURL(entry.preview).href, mime: "image/jpeg", name: path.basename(entry.raw) })),
-    ],
+    content: `Queued ${group.indices.length} actual JPEG image attachment(s) for the next session turn. End this turn now and wait for the queued image message. Do not call apply, finalize_metadata, cancel, or start again until that message arrives.`,
   }
 }
 
@@ -467,13 +463,7 @@ function metadataPromptText(job: Job, entry: JobEntry) {
 
 function metadataResult(job: Job, entry: JobEntry) {
   return {
-    content: [
-      {
-        type: "text",
-        text: metadataPromptText(job, entry),
-      },
-      { type: "file", uri: pathToFileURL(entry.jpeg).href, mime: "image/jpeg", name: path.basename(entry.jpeg) },
-    ],
+    content: `Queued the actual finished JPEG as an image attachment for the next session turn. End this turn now and wait for the queued image message. Do not call finalize_metadata, cancel, apply, or start again until that message arrives.`,
   }
 }
 
@@ -527,7 +517,7 @@ export default definePlugin({
           await ctx.session.prompt({
             sessionID,
             delivery,
-            text: `Run the RAW photo workflow for exactly this folder: ${JSON.stringify(folder)}. Call raw_photo_processor_start once. This is a strict two-phase workflow for each selected photo. First use the temporary preview(s) only to choose the best bracket exposure and realistic Camera Raw/crop adjustments, then call raw_photo_processor_apply. That tool saves both PSD and JPEG and returns the finished JPEG. Second, use only that finished JPEG for all visual identification, perform a fresh per-photo location lookup, and call raw_photo_processor_finalize_metadata; metadata is written to both already-saved files only in this second phase. If exact location cannot be verified, omit location fields and location Description. Sublocation image recognition requires confidence strictly above 90%; otherwise leave it blank. Never put coordinates in Description, copy another photo's metadata, or identify individual people. Repeat both phases until completion, and do not claim completion unless every image is completed or explicitly skipped/failed.`,
+            text: `Run the RAW photo workflow for exactly this folder: ${JSON.stringify(folder)}. Call raw_photo_processor_start once. Image-producing tools use queued session attachments because Code Mode cannot expose image pixels in their immediate return value. Whenever start, apply, or finalize_metadata says image attachments were queued, immediately end that turn and wait for the next queued user message; do not call any other RAW processor tool, do not restart, and especially do not cancel while waiting. The queued message is the authoritative continuation and contains viewable images. This is a strict two-phase workflow for each selected photo. First use the queued temporary preview image(s) to choose the best bracket exposure and realistic Camera Raw/crop adjustments, then call raw_photo_processor_apply. Wait for its queued finished-JPEG message. Second, use only that attached finished JPEG for identification, perform a fresh per-photo location lookup, and call raw_photo_processor_finalize_metadata. Wait for its queued next-preview message, then continue. If exact location cannot be verified, omit location fields and location Description. Sublocation image recognition requires confidence strictly above 90%; otherwise leave it blank. Never put coordinates in Description, copy another photo's metadata, identify individual people, or cancel unless the user explicitly asks you to cancel. Repeat both phases until completion.`,
           })
         },
       })
@@ -757,7 +747,7 @@ export default definePlugin({
 
       editor.add({
         name: "cancel",
-        description: "Cancel a RAW processing job and delete its temporary previews.",
+        description: "Cancel only when the user explicitly requests cancellation. Never use this while waiting for queued image attachments or after a temporary visual-access delay.",
         options: { namespace: "raw_photo_processor", codemode: true },
         input: {
           type: "object",
