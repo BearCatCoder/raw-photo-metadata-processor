@@ -26,7 +26,7 @@
             doc.info.copyrighted = CopyrightedType.COPYRIGHTEDWORK;
         }
 
-        if (RPP_CONFIG.gps || RPP_CONFIG.location || creator) {
+        if (RPP_CONFIG.gps || RPP_CONFIG.location || creator || (RPP_CONFIG.iptcSceneCodes && RPP_CONFIG.iptcSceneCodes.length)) {
             if (ExternalObject.AdobeXMPScript === undefined) {
                 ExternalObject.AdobeXMPScript = new ExternalObject("lib:AdobeXMPScript");
             }
@@ -51,12 +51,19 @@
                     xmp.setProperty(iptcCoreNamespace, "Location", RPP_CONFIG.location.sublocation);
                 }
             }
+            if (RPP_CONFIG.iptcSceneCodes && RPP_CONFIG.iptcSceneCodes.length) {
+                var sceneNamespace = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/";
+                xmp.deleteProperty(sceneNamespace, "Scene");
+                for (var sceneIndex = 0; sceneIndex < RPP_CONFIG.iptcSceneCodes.length; sceneIndex += 1) {
+                    xmp.appendArrayItem(sceneNamespace, "Scene", RPP_CONFIG.iptcSceneCodes[sceneIndex], 0, XMPConst.ARRAY_IS_UNORDERED);
+                }
+            }
             if (creator) {
                 var dcNamespace = "http://purl.org/dc/elements/1.1/";
                 var rightsNamespace = "http://ns.adobe.com/xap/1.0/rights/";
                 xmp.setLocalizedText(dcNamespace, "rights", "", "x-default", copyrightNotice);
                 xmp.setProperty(rightsNamespace, "Marked", true, XMPConst.BOOLEAN);
-                xmp.setLocalizedText(rightsNamespace, "UsageTerms", "", "x-default", "All rights reserved. The Creator retains all rights.");
+                xmp.setLocalizedText(rightsNamespace, "UsageTerms", "", "x-default", "All rights reserved. " + creator + " retains all rights.");
             }
             doc.xmpMetadata.rawData = xmp.serialize();
         }

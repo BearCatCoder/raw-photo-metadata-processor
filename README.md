@@ -37,6 +37,10 @@ Metadata finalization requires an explicit `locationDecision`. If the model iden
 
 When source metadata contains a Creator, the plugin preserves any existing Copyright Notice or fills an empty notice with `Copyright (c) <Creator>. All rights reserved.` It marks the output as Copyrighted and writes XMP Rights and Usage Terms stating that the Creator retains all rights. These protections are embedded in both PSD and JPEG outputs.
 
+Rights Usage Terms use the actual Creator name (for example, `All rights reserved. Bryan Smith retains all rights.`), never the generic phrase “The Creator.” When a matching official value can be verified, the model may also supply one or more six-digit IPTC Scene-NewsCodes; uncertain codes are omitted.
+
+After each finalized photo, the plugin reports elapsed processing time and the OpenCode-recorded token delta (input, output, reasoning, and cache read/write). It also requests session compaction before queuing the next photo. Compaction replaces older conversation with a summary rather than deleting the active job instructions or plugin state, making long batches safer than hard-clearing context.
+
 Every processed photo is independently analyzed and, when a location is available or confidently inferred, independently researched. Descriptions and complete keyword sets must be photo-specific. The plugin rejects an exactly reused Description or identical complete keyword set within the same batch, while allowing individual relevant terms such as a shared city or `landscape` to overlap.
 
 ## Select Terra instead

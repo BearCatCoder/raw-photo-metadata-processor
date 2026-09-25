@@ -75,6 +75,13 @@ const EDIT_SCHEMA = {
       enum: ["verified", "unverified"],
       description: "Required explicit decision for this photo. Use verified whenever any place is identified or named in Description/Keywords; use unverified only when no exact place can be established and no place names are emitted.",
     },
+    iptcSceneCodes: {
+      type: "array",
+      maxItems: 20,
+      uniqueItems: true,
+      items: { type: "string", pattern: "^[0-9]{6}$" },
+      description: "Official six-digit IPTC Scene-NewsCodes applicable to this photo. Verify against the IPTC controlled vocabulary; omit or use an empty array when uncertain.",
+    },
     inferredLocation: {
       type: "object",
       additionalProperties: false,
@@ -108,7 +115,7 @@ const ADJUSTMENT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: Object.fromEntries(
-    Object.entries(EDIT_SCHEMA.properties).filter(([name]) => !["description", "keywords", "locationDecision", "inferredLocation", "location"].includes(name)),
+    Object.entries(EDIT_SCHEMA.properties).filter(([name]) => !["description", "keywords", "locationDecision", "iptcSceneCodes", "inferredLocation", "location"].includes(name)),
   ),
 } as const
 
@@ -119,6 +126,7 @@ const METADATA_SCHEMA = {
     description: EDIT_SCHEMA.properties.description,
     keywords: EDIT_SCHEMA.properties.keywords,
     locationDecision: EDIT_SCHEMA.properties.locationDecision,
+    iptcSceneCodes: EDIT_SCHEMA.properties.iptcSceneCodes,
     inferredLocation: EDIT_SCHEMA.properties.inferredLocation,
     location: EDIT_SCHEMA.properties.location,
   },
@@ -148,6 +156,7 @@ type Edit = {
   description?: string
   keywords?: string[]
   locationDecision?: "verified" | "unverified"
+  iptcSceneCodes?: string[]
   inferredLocation?: {
     landmark: string
     confidence: number
@@ -189,6 +198,32 @@ type Job = {
   descriptions: Set<string>
   keywordSets: Set<string>
   pending?: { group: { type: "single" | "bracket"; indices: number[] }; selectedIndex: number }
+  photoStartedAt: number
+  tokenBaseline: TokenTotals
+}
+
+type TokenTotals = {
+  input: number
+  output: number
+  reasoning: number
+  cacheRead: number
+  cacheWrite: number
+}
+
+function tokenDelta(current: TokenTotals, previous: TokenTotals): TokenTotals {
+  return {
+    input: Math.max(0, current.input - previous.input),
+    output: Math.max(0, current.output - previous.output),
+    reasoning: Math.max(0, current.reasoning - previous.reasoning),
+    cacheRead: Math.max(0, current.cacheRead - previous.cacheRead),
+    cacheWrite: Math.max(0, current.cacheWrite - previous.cacheWrite),
+  }
+}
+
+function formatDuration(milliseconds: number) {
+  const seconds = Math.max(0, Math.round(milliseconds / 1000))
+  const minutes = Math.floor(seconds / 60)
+  return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`
 }
 
 const jobs = new Map<string, Job>()
@@ -455,6 +490,7 @@ async function updateOutputMetadata(pluginDirectory: string, entry: JobEntry, ed
     jpeg: entry.jpeg,
     description: hasLocation && typeof edit.description === "string" ? edit.description.trim() : null,
     keywords: [...new Set((edit.keywords ?? []).map((keyword) => keyword.trim()).filter(Boolean))].slice(0, 30),
+    iptcSceneCodes: [...new Set((edit.iptcSceneCodes ?? []).filter((code) => /^[0-9]{6}$/.test(code)))].slice(0, 20),
     gps: inferred ? { latitude: inferred.latitude, longitude: inferred.longitude } : null,
     location: hasLocation && edit.location ? {
       sublocation: edit.location.sublocation?.trim() || null,
@@ -504,6 +540,29 @@ export default definePlugin({
     const requestedProvider = requested.shift() ?? ""
     const requestedModel = requested.join("/")
 
+    const readSessionTokens = async (sessionID: string): Promise<TokenTotals> => {
+      const session: any = await ctx.session.get({ sessionID })
+      const tokens = session?.tokens
+      return {
+        input: Number(tokens?.input) || 0,
+        output: Number(tokens?.output) || 0,
+        reasoning: Number(tokens?.reasoning) || 0,
+        cacheRead: Number(tokens?.cache?.read) || 0,
+        cacheWrite: Number(tokens?.cache?.write) || 0,
+      }
+    }
+
+    const requestCompaction = async (sessionID: string) => {
+      const compact = (ctx.session as any).compact
+      if (typeof compact !== "function") return "Context compaction unavailable in this OpenCode runtime."
+      try {
+        await compact({ sessionID, delivery: "steer" })
+        return "Context compaction requested."
+      } catch (error: any) {
+        return `Context compaction request failed: ${error?.message ?? String(error)}`
+      }
+    }
+
     const queuePreviewAttachments = async (sessionID: string, job: Job, message: string) => {
       const group = job.group ?? { type: "single" as const, indices: [job.index] }
       const entries = group.indices.map((index) => job.entries[index])
@@ -530,7 +589,7 @@ export default definePlugin({
           await ctx.session.prompt({
             sessionID,
             delivery,
-            text: `Run the RAW photo workflow for exactly this folder: ${JSON.stringify(folder)}. Call raw_photo_processor_start once. Image-producing tools use queued session attachments because Code Mode cannot expose image pixels in their immediate return value. Whenever start, apply, or finalize_metadata says image attachments were queued, immediately end that turn and wait for the next queued user message; do not call any other RAW processor tool, restart, or cancel while waiting. First use queued previews to choose bracket exposure and adjustments, call apply, then wait for the queued finished-JPEG attachment. Use only that finished image for identification and call finalize_metadata. Every photo requires locationDecision. If you identify or name any landmark, city, region, country, venue, park, building, or other place anywhere in your reasoning, Description, or Keywords, set locationDecision to verified and provide complete structured location metadata; with no source GPS or source Description, also provide inferredLocation with greater than 90% confidence and verified coordinates. A famous, visually unmistakable landmark above 90% confidence counts as verified even without source GPS. Use unverified only when no exact place is established and emit no place names in Description or Keywords. Never put coordinates in Description, copy metadata, identify individual people, or cancel unless the user explicitly asks. Repeat until completion.`,
+            text: `Run the RAW photo workflow for exactly this folder: ${JSON.stringify(folder)}. Call raw_photo_processor_start once. Image-producing tools use queued session attachments because Code Mode cannot expose image pixels in their immediate return value. Whenever start, apply, or finalize_metadata says image attachments were queued, immediately end that turn and wait for the next queued user message; do not call any other RAW processor tool, restart, or cancel while waiting. First use queued previews to choose bracket exposure and adjustments, call apply, then wait for the queued finished-JPEG attachment. Use only that finished image for identification and call finalize_metadata. Every photo requires locationDecision. If you identify or name any landmark, city, region, country, venue, park, building, or other place anywhere in your reasoning, Description, or Keywords, set locationDecision to verified and provide complete structured location metadata; with no source GPS or source Description, also provide inferredLocation with greater than 90% confidence and verified coordinates. A famous, visually unmistakable landmark above 90% confidence counts as verified even without source GPS. Use unverified only when no exact place is established and emit no place names in Description or Keywords. When applicable, look up and provide only verified official six-digit IPTC Scene-NewsCodes; leave iptcSceneCodes empty when uncertain. Never put coordinates in Description, copy metadata, identify individual people, or cancel unless the user explicitly asks. Repeat until completion.`,
           })
         },
       })
@@ -588,6 +647,7 @@ export default definePlugin({
               identificationPreview: path.join(work, `${String(index + 1).padStart(5, "0")}-finished.jpg`),
             }
           })
+          const tokenBaseline = await readSessionTokens(context.sessionID)
           const job: Job = {
             id,
             folder,
@@ -599,6 +659,8 @@ export default definePlugin({
             skipped: [],
             descriptions: new Set(),
             keywordSets: new Set(),
+            photoStartedAt: Date.now(),
+            tokenBaseline,
           }
           jobs.set(id, job)
           try {
@@ -737,6 +799,9 @@ export default definePlugin({
           if (edit.description && descriptionContainsCoordinates(edit.description)) {
             throw new Error("Description must not contain GPS coordinates, latitude/longitude labels, or coordinate notation.")
           }
+          if ((edit.iptcSceneCodes ?? []).some((code) => !/^[0-9]{6}$/.test(code))) {
+            throw new Error("Every IPTC Scene Code must be an official six-digit numeric Scene-NewsCode.")
+          }
           const descriptionFingerprint = edit.description?.trim() ? normalizeMetadataText(edit.description) : undefined
           const keywordsFingerprint = keywordFingerprint(keywords)
           if (descriptionFingerprint && job.descriptions.has(descriptionFingerprint)) {
@@ -758,17 +823,25 @@ export default definePlugin({
           job.index = group.indices[group.indices.length - 1] + 1
           job.group = undefined
           job.pending = undefined
+          const elapsed = Date.now() - job.photoStartedAt
+          const currentTokens = await readSessionTokens(context.sessionID)
+          const used = tokenDelta(currentTokens, job.tokenBaseline)
+          const billableTotal = used.input + used.output + used.reasoning
+          const compactionStatus = await requestCompaction(context.sessionID)
+          const performance = `Photo report — time: ${formatDuration(elapsed)}; recorded tokens: ${billableTotal.toLocaleString()} total (${used.input.toLocaleString()} input, ${used.output.toLocaleString()} output, ${used.reasoning.toLocaleString()} reasoning; cache ${used.cacheRead.toLocaleString()} read/${used.cacheWrite.toLocaleString()} write). ${compactionStatus}`
+          job.tokenBaseline = currentTokens
           await nextUnprocessed(job)
           if (job.index >= job.entries.length) {
             jobs.delete(job.id)
             await rm(job.work, { recursive: true, force: true })
             return {
-              content: `RAW processing complete. Created ${job.completed.length} PSD/JPEG pair(s); skipped ${job.skipped.length}.\nPSD files: ${path.join(job.folder, "PSDs")}\nJPEG files: ${path.join(job.folder, "JPEGs")}`,
+              content: `${performance}\nRAW processing complete. Created ${job.completed.length} PSD/JPEG pair(s); skipped ${job.skipped.length}.\nPSD files: ${path.join(job.folder, "PSDs")}\nJPEG files: ${path.join(job.folder, "JPEGs")}`,
             }
           }
+          job.photoStartedAt = Date.now()
           await context.progress({ status: `Reading metadata and creating preview(s) at image ${job.index + 1} of ${job.entries.length}` })
           await prepareCurrent(pluginDirectory, job, context.signal)
-          const message = `Metadata updated after save for ${path.basename(entry.psd)} and JPEGs/${path.basename(entry.jpeg)}.`
+          const message = `Metadata updated after save for ${path.basename(entry.psd)} and JPEGs/${path.basename(entry.jpeg)}.\n${performance}`
           await queuePreviewAttachments(context.sessionID, job, message)
           return currentResult(job, message)
         },
