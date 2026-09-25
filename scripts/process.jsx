@@ -111,6 +111,9 @@
                 xmp.setProperty(photoshopNamespace, "State", RPP_CONFIG.location.stateProvince);
                 xmp.setProperty(photoshopNamespace, "Country", RPP_CONFIG.location.country);
                 xmp.setProperty(iptcCoreNamespace, "CountryCode", RPP_CONFIG.location.isoCountryCode);
+                if (RPP_CONFIG.location.sublocation) {
+                    xmp.setProperty(iptcCoreNamespace, "Location", RPP_CONFIG.location.sublocation);
+                }
             }
             if (creator) {
                 var dcNamespace = "http://purl.org/dc/elements/1.1/";

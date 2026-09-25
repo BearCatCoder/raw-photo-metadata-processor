@@ -25,6 +25,8 @@ Without source GPS, a landmark fallback is permitted only when the model can ide
 
 Whenever a location is established from source GPS, a verified landmark, or an existing source Description, the plugin also writes City, State/Province, Country, and the IPTC three-letter ISO Country Code into both output formats.
 
+Each selected photo is independently checked for a correctly identified named landmark, building, park, venue, neighborhood, or site. When verified, its specific name is written to IPTC Sublocation. A visually inferred landmark above the required confidence threshold must include Sublocation; identifications are never carried from one photo to another.
+
 When source metadata contains a Creator, the plugin preserves any existing Copyright Notice or fills an empty notice with `Copyright (c) <Creator>. All rights reserved.` It marks the output as Copyrighted and writes XMP Rights and Usage Terms stating that the Creator retains all rights. These protections are embedded in both PSD and JPEG outputs.
 
 Every processed photo is independently analyzed and, when a location is available or confidently inferred, independently researched. Descriptions and complete keyword sets must be photo-specific. The plugin rejects an exactly reused Description or identical complete keyword set within the same batch, while allowing individual relevant terms such as a shared city or `landscape` to overlap.

@@ -87,6 +87,7 @@ const EDIT_SCHEMA = {
       additionalProperties: false,
       description: "Required when GPS, a verified inferred landmark, or the source Description establishes a location.",
       properties: {
+        sublocation: { type: "string", minLength: 1, maxLength: 200, description: "Verified specific landmark, building, park, venue, site, neighborhood, or other named sublocation visible in this individual photo. Omit when no specific place is correctly identified." },
         city: { type: "string", minLength: 1, maxLength: 200 },
         stateProvince: { type: "string", minLength: 1, maxLength: 200 },
         country: { type: "string", minLength: 1, maxLength: 200 },
@@ -126,6 +127,7 @@ type Edit = {
     longitude: number
   }
   location?: {
+    sublocation?: string
     city: string
     stateProvince: string
     country: string
@@ -267,8 +269,8 @@ function currentResult(job: Job, message: string) {
     })
     .join("\n")
   const metadataInstruction = entries.some((entry) => entry.gps)
-    ? `Independently research this selected photo using its supplied GPS coordinates. Add an objective, photo-specific description, subject/location keywords, and verified City, State/Province, Country, and three-letter ISO Country Code. Do not reuse another photo's metadata. Never identify individual people; describe them only generically.`
-    : `Independently evaluate this selected photo and its source Description, if supplied. If the source Description establishes a location, verify it and provide a photo-specific Description, keywords, City, State/Province, Country, and three-letter ISO Country Code. Otherwise, only when a distinctive landmark can be identified with greater than 90% certainty, separately verify its WGS-84 coordinates and provide inferredLocation plus those location fields. If neither condition applies, omit inferredLocation, generated description, and location fields, and add photo-specific visual-subject keywords with no guessed location. Do not reuse another photo's metadata.`
+    ? `Independently research this selected photo using its supplied GPS coordinates. Add an objective, photo-specific description, subject/location keywords, and verified City, State/Province, Country, and three-letter ISO Country Code. Independently check whether this photo shows a correctly identified named landmark, building, park, venue, neighborhood, or site; if so, fill Sublocation with that specific name. Do not reuse another photo's identification or metadata. Never identify individual people; describe them only generically.`
+    : `Independently evaluate this selected photo and its source Description, if supplied. If the source Description establishes a location, verify it and provide a photo-specific Description, keywords, City, State/Province, Country, and three-letter ISO Country Code. Independently check for a correctly identified named landmark, building, park, venue, neighborhood, or site and fill Sublocation when found. Otherwise, only when a distinctive landmark can be identified with greater than 90% certainty, separately verify its WGS-84 coordinates and provide inferredLocation plus those location fields and a required Sublocation. If neither condition applies, omit inferredLocation, generated description, and location fields, and add photo-specific visual-subject keywords with no guessed location. Do not reuse another photo's identification or metadata.`
   const instruction = group.type === "bracket"
     ? `This is a five-shot bracket set. Compare all five attached previews and call raw_photo_processor_apply with selectedOffset 0-4 for the best usable exposure. Only that frame will be processed.`
     : `Analyze the attached preview, then call raw_photo_processor_apply with realistic Camera Raw values and a 3:2 crop.`
@@ -402,6 +404,7 @@ async function applyEdit(pluginDirectory: string, entry: JobEntry, edit: Edit, o
       keywords: [...new Set((edit.keywords ?? []).map((keyword) => keyword.trim()).filter(Boolean))].slice(0, 30),
       gps: inferred ? { latitude: inferred.latitude, longitude: inferred.longitude } : null,
       location: hasLocation && edit.location ? {
+        sublocation: edit.location.sublocation?.trim() || null,
         city: edit.location.city.trim(),
         stateProvince: edit.location.stateProvince.trim(),
         country: edit.location.country.trim(),
@@ -454,7 +457,7 @@ export default definePlugin({
           await ctx.session.prompt({
             sessionID,
             delivery,
-            text: `Run the RAW photo workflow for exactly this folder: ${JSON.stringify(folder)}. Call raw_photo_processor_start once. For each result, independently assess that photo's exposure, white balance, tonal recovery, restrained color, local contrast, horizon angle, composition, subject, and metadata; do not carry forward another photo's choices. A five-preview result is a bracket set: compare all five, choose the best exposure, and pass its 0-based selectedOffset to raw_photo_processor_apply so only that frame is processed. For every selected photo with GPS, perform a fresh lookup using its coordinates and create a unique objective Description, unique subject/location keywords, and verified City, State/Province, Country, and ISO 3166-1 alpha-3 Country Code. Without GPS, inspect the supplied source Description: if it establishes a location, freshly verify it and provide the same structured location fields and unique metadata. Otherwise separately assess whether a distinctive landmark can be identified with greater than 90% certainty; only above that threshold, perform a fresh verification lookup of the landmark and WGS-84 coordinates, provide inferredLocation, and create the same location fields and unique metadata. If no location is established, omit inferredLocation, generated Description, and location fields and create a unique visual-subject keyword set without a guessed location. Never copy a Description or complete keyword set between photos. Never identify or name individual people; use generic terms such as person, people, or crowd. Repeat until completion. Keep edits photorealistic; avoid clipping, halos, excessive saturation, and aggressive dehaze. Do not claim completion unless every image is completed or explicitly reported as skipped/failed.`,
+            text: `Run the RAW photo workflow for exactly this folder: ${JSON.stringify(folder)}. Call raw_photo_processor_start once. For each result, independently assess that photo's exposure, white balance, tonal recovery, restrained color, local contrast, horizon angle, composition, subject, and metadata; do not carry forward another photo's choices or place identification. A five-preview result is a bracket set: compare all five, choose the best exposure, and pass its 0-based selectedOffset to raw_photo_processor_apply so only that frame is processed. For every selected photo with GPS, perform a fresh lookup using its coordinates and create a unique objective Description, unique subject/location keywords, and verified City, State/Province, Country, and ISO 3166-1 alpha-3 Country Code. Independently check every selected photo for a correctly identified named landmark, building, park, venue, neighborhood, or site; when one is verified, fill Sublocation with its specific name. Without GPS, inspect the supplied source Description: if it establishes a location, freshly verify it and provide the same structured fields, including Sublocation when a specific place is identified. Otherwise separately assess whether a distinctive landmark can be identified with greater than 90% certainty; only above that threshold, perform a fresh verification lookup of the landmark and WGS-84 coordinates, provide inferredLocation, the landmark as Sublocation, and unique location metadata. If no location is established, omit inferredLocation, generated Description, and location fields and create a unique visual-subject keyword set without a guessed location. Never copy a Description or complete keyword set between photos. Never identify or name individual people; use generic terms such as person, people, or crowd. Repeat until completion. Keep edits photorealistic; avoid clipping, halos, excessive saturation, and aggressive dehaze. Do not claim completion unless every image is completed or explicitly reported as skipped/failed.`,
           })
         },
       })
@@ -580,6 +583,9 @@ export default definePlugin({
           const hasKnownLocation = Boolean(entry.gps || inferred || descriptionLocation)
           if ((entry.gps || inferred) && !location) {
             throw new Error("A GPS-based location requires City, State/Province, Country, and ISO Country Code.")
+          }
+          if (inferred && !location?.sublocation?.trim()) {
+            throw new Error("A verified inferred landmark requires its specific name in Sublocation.")
           }
           if (location) {
             const fields = [location.city, location.stateProvince, location.country, location.isoCountryCode]
